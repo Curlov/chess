@@ -1,0 +1,596 @@
+import FenFactory from './FenFactory.js';
+
+export default class ChessBoard {
+    constructor(containerID, loadedMedia, device, moveWorker, options = {}) {
+        const {
+            interactive = true, 
+            ownColorOnly = true, 
+            showLegalMoves = true, 
+            showMoves = true, 
+            soundON = false,
+            sizeField = 60,
+            isFlipped = false
+        } = options;
+        
+        this.container = document.querySelector(containerID);
+        this.board = this.container.querySelector(".board");
+        this.onMouseMove = this.onMouseMove.bind(this);
+        this.onMouseUp = this.onMouseUp.bind(this);
+        this.currentElement = null;
+        this.offsetX = 0;
+        this.offsetY = 0;
+
+        this.interactive = interactive;
+        this.ownColorOnly = ownColorOnly;
+        this.showLegalMoves = showLegalMoves;
+        this.showMoves = showMoves;
+        this.soundON = soundON;
+        this.sizeField = sizeField;   
+        this.isFlipped = isFlipped; 
+        this.device = device;
+        this.moveWorker = moveWorker;
+
+        this.fenTypeToImgType = {"p": "bp", "r": "br", "n": "bn", "b": "bb", "q": "bq", "k": "bk",
+                                 "P": "wp", "R": "wr", "N": "wn", "B": "wb", "Q": "wq", "K": "wk"};
+
+        this.loadedMedia = loadedMedia;
+
+        this.occupiedFields = [];
+        this.whiteFields = [];
+        this.fen = {};
+        this.validMoves = [];
+        this.myColor = null;
+
+        if (this.moveWorker) {
+            this.moveWorker.onmessage = (e) => {
+                this.validMoves = Array.isArray(e.data) ? e.data : [];
+                console.log("showLegalMoves: ", this.showLegalMoves);
+                
+                if (this.showLegalMoves) {
+                    this.clearHighlights();
+                    this.highlight(this.validMoves);
+                }
+
+                console.log("erlaubte Züge", this.validMoves);
+            };
+        }
+
+        this.setBoardSize();
+        this.createBoard();
+
+        if (!this.interactive) {
+            this.board.classList.add("nonInteractive");
+        } else {
+            this.board.classList.remove("nonInteractive");
+        }
+
+    }
+
+    setBoardSize() {
+        const sizeAllFields  = this.sizeField * 8;
+        const sizeRims       = this.sizeField;
+        const sizeChessBoard = sizeAllFields + sizeRims;
+        const sizePieces     = (this.sizeField / 100) * 80;
+
+        // NICHT this.board, sondern der äußere Container
+        const root = this.container;
+
+        root.style.setProperty('--field',      `${this.sizeField}px`);
+        root.style.setProperty('--allFields',  `${sizeAllFields}px`);
+        root.style.setProperty('--rims',       `${sizeRims}px`);
+        root.style.setProperty('--chessBoard', `${sizeChessBoard}px`);
+        root.style.setProperty('--pieces',     `${sizePieces}px`);
+
+        // Figuren ggf. neu positionieren
+        const pieces = this.board.querySelectorAll(".piece");
+        pieces.forEach((piece) => {
+            const field = parseInt(piece.dataset.position, 10);
+            const { x, y } = this.getSquareCenter(field);
+            piece.style.left = x + "px";
+            piece.style.top  = y + "px";
+        });
+    }
+
+    // Das Schachbrett wird erzeugt, das Platzhalter Div wird mit einem Hintergrundbild belegt
+    // und der Event listener angeheftet
+    createBoard() {
+        this.board.innerHTML = "";
+        const content = this.container; 
+
+        // Wir deaktivieren das Kontextmenü was wir normalerweise mit der rechten Maustaste öffnen
+        this.board.addEventListener('contextmenu', function(e) {
+            e.preventDefault();
+        });
+
+        const boardImage = this.loadedMedia['board'];
+        if (boardImage) {
+            content.style.backgroundImage = `url(${boardImage.src})`;
+            content.style.backgroundSize = "cover";
+            content.style.backgroundPosition = "center center";
+            content.style.backgroundRepeat = "no-repeat";
+        }
+
+        // Das Schachbrett wird erzeugt
+        for (let row = 8; row >= 1; row--) {  // Jetzt von 1 bis 8 
+            for (let col = 1; col <= 8; col++) {  // Jetzt von 1 bis 8
+                const square = document.createElement("div");
+                square.classList.add("square");
+
+                // Zuweisung der menschlichen Notation (a1 bis h8)
+                const columnLetter = String.fromCharCode(96 + col); // Wandelt die Zahl 1-8 in a-h um (ASCII-Werte)
+                square.dataset.notation = `${columnLetter}${row}`; // Kombiniert die Spalte (a-h) mit der Reihe (1-8)
+                // Korrektur der Berechnung der Feldnummer:
+                // Reihe 8 → 0, Reihe 7 → 8, etc.
+                square.dataset.field = ((row - 1) * 8 + (col - 1)).toString(); // Berechnet die Feldnummer von 0 bis 63
+                // Das Quadrat zum Schachbrett hinzufügen
+                this.board.appendChild(square);
+            }
+        }
+        // Nun können die Schachfiguren erstellt werden
+        this.enableDrag();
+    }
+
+    createPieces() {
+        this.occupiedFields = [];
+        this.whiteFields = [];
+        this.myColor = this.fen.moveRight;
+
+        const pieces = this.fen.figuresPosition;
+
+        pieces.forEach(({ field, type }) => {
+            // Sets befüllen
+            this.occupiedFields.push(field);
+            if (type === type.toUpperCase()) {
+                this.whiteFields.push(field);
+            }
+
+            const template = this.loadedMedia[this.fenTypeToImgType[type]];
+            if (!template) return;
+
+            // für jede Figur eine eigene Kopie
+            const piece = template.cloneNode(true);
+            piece.classList.add("piece");
+            piece.dataset.type = type;
+
+            // Skalierung
+            if (type.toLowerCase() === "p") {
+                piece.dataset.scale = "0.8"; // falls du das irgendwo anders noch brauchst
+                piece.style.setProperty('--piece-scale', '0.8');
+            } else {
+                piece.dataset.scale = "1.0";
+                piece.style.setProperty('--piece-scale', '1.0');
+            }
+
+            // Position anhand Bitboard-Index (0 = a1, 63 = h8)
+            const { x, y } = this.getSquareCenter(field);
+            piece.style.left = x + "px";
+            piece.style.top = y + "px";
+
+            // interne Feldinfo
+            piece.dataset.position = String(field);
+
+            this.board.appendChild(piece);
+        });
+    }
+
+    clearAllPieces() {
+        // alle Figuren vom Brett entfernen
+        const pieces = this.board.querySelectorAll(".piece");
+        pieces.forEach(p => p.remove());
+
+        // Zustände resetten
+        this.occupiedFields = [];
+        this.whiteFields = [];
+
+        // Markierungen (optional) auch gleich weg
+        if (typeof this.clearHighlights === "function") {
+            this.clearHighlights(true); // sofort, ohne Fade
+        }
+    }
+
+    placePiece(field, type) {
+        const f = Number(field);
+
+        // Falls schon eine Figur auf dem Feld steht → löschen
+        const existing = this.getPieceAt(f);
+        if (existing) {
+           this.removePiece(f);
+        }
+
+        // Bild aus dem geladenen Media holen
+        const imgKey = this.fenTypeToImgType[type];
+        const img = this.loadedMedia[imgKey];
+        if (!img) {
+            console.warn("Kein Bild für Figurentyp", type);
+            return;
+        }
+
+        const piece = document.createElement("img");
+        piece.src = img.src;
+        piece.classList.add("piece");
+        piece.dataset.type = type;
+
+
+        if (type.toLowerCase() === "p") {
+            piece.dataset.scale = "0.8";
+        } else {
+            piece.dataset.scale = "1.0";
+        }
+        piece.style.transform = `translate(-50%, -50%) scale(${piece.dataset.scale})`;
+
+        const { x, y } = this.getSquareCenter(f);
+        piece.style.left = x + "px";
+        piece.style.top  = y + "px";
+        piece.dataset.position = String(f);
+
+        this.board.appendChild(piece);
+
+        // Felderlisten aktualisieren
+        if (!this.occupiedFields.includes(f)) {
+            this.occupiedFields.push(f);
+        }
+        if (type === type.toUpperCase()) { // weiß
+            if (!this.whiteFields.includes(f)) {
+                this.whiteFields.push(f);
+            }
+        }
+
+        return piece; // falls du was damit machen willst
+    }
+
+    removePiece(field) {
+        const f = Number(field);
+        const piece = this.getPieceAt(f);
+        if (!piece) {
+            console.warn("Keine Figur auf Feld", f);
+            return;
+        }
+
+        piece.remove();
+
+        this.occupiedFields = this.occupiedFields.filter(x => Number(x) !== f);
+        this.whiteFields = this.whiteFields.filter(x => Number(x) !== f);
+    }
+
+    move(fromField, toField, onDone) {
+        const piece = this.getPieceAt(fromField); 
+        if (!piece) {
+            console.warn("Keine Figur auf Feld:", fromField);
+            return;
+        }
+
+        this.animateMovePiece(piece, fromField, toField, onDone);
+        this.changeMoveRight();
+    }
+
+    animateMovePiece(piece, fromField, toField, onDone) {
+        const from = Number(fromField);
+        const to   = Number(toField);
+
+        if(this.showMoves) {
+            this.clearHighlights(true);
+            this.highlight(from, "f");
+        } 
+
+        const { x: sx, y: sy } = this.getSquareCenter(from);
+        const { x: ex, y: ey } = this.getSquareCenter(to);
+
+        // Distanzabhängige Move-Dauer
+        const fFile = from % 8;
+        const fRank = Math.floor(from / 8);
+        const tFile = to % 8;
+        const tRank = Math.floor(to / 8);
+        const dx = Math.abs(tFile - fFile);
+        const dy = Math.abs(tRank - fRank);
+        const dist = Math.max(dx, dy);        // 0..7
+
+        const minMoveDuration = 50;   // ein Feld
+        const maxMoveDuration = 300;  // max Distanz
+        const maxDist         = 7;
+
+        const moveDuration = minMoveDuration +
+            (maxMoveDuration - minMoveDuration) * (dist / maxDist);
+
+        const liftPause = 100; // kleine Pause vor dem Losfahren
+
+        const allPieces = this.board.querySelectorAll(".piece");
+        allPieces.forEach(p => {
+            if (p !== piece) p.style.pointerEvents = "none";
+        });
+
+        piece.style.zIndex = "9999";
+        piece.classList.add("drag"); 
+
+        const startMove = () => {
+            let moveStart = null;
+
+            const move = (ts) => {
+                if (!moveStart) moveStart = ts;
+
+                let t = (ts - moveStart) / moveDuration;
+                if (t > 1) t = 1;
+
+                const x = sx + (ex - sx) * t;
+                const y = sy + (ey - sy) * t;
+
+                piece.style.left = x + "px";
+                piece.style.top  = y + "px";
+
+                if (t < 1) {
+                    requestAnimationFrame(move);
+                } else {
+                    finalize();
+                }
+            };
+
+            requestAnimationFrame(move);
+        };
+
+        const finalize = () => {
+            // Falls schon eine Figur auf dem Zielfeld steht → löschen
+            const destPiece = this.getPieceAt(to);
+            if (destPiece && destPiece !== piece) {
+                this.removePiece(to);
+            }
+
+            // Endposition sauber setzen
+            const { x: fx, y: fy } = this.getSquareCenter(to);
+            piece.style.left = fx + "px";
+            piece.style.top  = fy + "px";
+
+            piece.style.zIndex = "";
+            piece.classList.remove("drag");
+            piece.dataset.position = String(to);
+
+            // Felder-Arrays aktualisieren
+            this.occupiedFields = this.occupiedFields.filter(f => Number(f) !== from);
+            if (!this.occupiedFields.includes(to)) this.occupiedFields.push(to);
+
+            if (piece.dataset.type === piece.dataset.type.toUpperCase()) {
+                this.whiteFields = this.whiteFields.filter(f => Number(f) !== from);
+                if (!this.whiteFields.includes(to)) this.whiteFields.push(to);
+            }
+
+            // Andere Figuren wieder aktivieren
+            allPieces.forEach(p => p.style.pointerEvents = "");
+
+            // Sound
+            if(this.soundON) this.playSound('move');
+
+            if(this.showMoves) {
+                this.highlight(to, "f");
+            } 
+
+            if (onDone) onDone();
+        };
+
+        // kleine Wartezeit vor der Bewegung
+        setTimeout(startMove, liftPause);
+    }
+
+    // zentrische Position eines Feldes (Bitboard: 0 = a1, 63 = h8)
+    getSquareCenter(field) {
+        const f = Number(field);
+        const rankFromBottom = Math.floor(f / 8); // 0 = Reihe 1 (unten), 7 = Reihe 8 (oben)
+        const file = f % 8;                       // 0 = a, 7 = h
+
+        const x = Math.round(file * this.sizeField + this.sizeField / 2);
+        const y = Math.round((7 - rankFromBottom) * this.sizeField + this.sizeField / 2); // 0 oben
+
+        return { x, y };
+    }
+
+    getPieceAt(field) {
+        const f = String(field);
+        const pieces = this.board.querySelectorAll(".piece");
+        for (const p of pieces) {
+            if (p.dataset.position === f) {
+                return p;
+            }
+        }
+        return null;
+    }
+
+    clearHighlights(immediate = false) {
+        const squares = Array.from(
+            this.board.querySelectorAll(".square.f-color, .square.c-color, .square.show")
+        );
+
+        if (squares.length === 0) return;
+
+        // Schritt 1: Sichtbarkeit aus → startet Fade-Out
+        squares.forEach(sq => sq.classList.remove("show"));
+
+        if (immediate) {
+            // Ohne Fade: sofort alles weg
+            squares.forEach(sq => sq.classList.remove("f-color", "c-color"));
+        } else {
+            // Mit Fade: Farbklassen nach 200ms entfernen
+            setTimeout(() => {
+                squares.forEach(sq => sq.classList.remove("f-color", "c-color"));
+            }, 100); // muss zur CSS-Transition passen
+        }
+    }
+
+    highlight(fields, type = "f") {
+        const colorClass = (type === "f") ? "f-color" : "c-color";
+
+        if (fields == null) return;
+        if (!Array.isArray(fields)) {
+            fields = [fields];
+        }
+
+        fields.forEach(f => {
+            const sq = this.board.querySelector(`.square[data-field="${f}"]`);
+            if (!sq) return;
+
+            sq.classList.add(colorClass);
+            sq.classList.add("show");
+        });
+    }
+  
+    enableDrag() {
+        if (!this.interactive) return;
+
+        this.board.addEventListener("mousedown", (event) => {
+            const piece = event.target.closest(".piece");
+            if (!piece) return;
+
+            const field = piece.dataset.position;
+         
+            event.preventDefault();
+
+            const figure = piece.dataset.type;
+            const isWhitePiece = (figure === figure.toUpperCase());
+            const pieceColor = isWhitePiece ? "w" : "b";
+
+            // Falsche Seite am Zug → kein Drag
+            if (pieceColor !== this.fen.moveRight || pieceColor !== this.myColor && this.ownColorOnly) {
+                return;
+            }
+
+            this.currentElement = piece;
+
+            // Worker-Aufruf mit Instanzzustand:
+            this.moveWorker.postMessage({
+                field,
+                figure,
+                occupiedFields: this.occupiedFields.slice(),
+                whiteFields: this.whiteFields.slice()
+            });
+            
+            // Andere Figuren temporär deaktivieren
+            const allPieces = this.board.querySelectorAll(".piece");
+            allPieces.forEach(p => {
+                if (p !== piece) {
+                    p.style.pointerEvents = "none";
+                }
+            });
+
+            // Offset berechnen (zentriert)
+            const rect = piece.getBoundingClientRect();
+            this.offsetX = event.clientX - (rect.left + rect.width / 2);
+            this.offsetY = event.clientY - (rect.top + rect.height / 2);
+
+            // Für smooth dragging
+            document.body.style.cursor = "grabbing";
+            piece.style.left = `${event.clientX - this.offsetX}px`;
+            piece.style.top = `${event.clientY - this.offsetY}px`;
+            piece.style.zIndex = "9999";
+            piece.classList.add("drag");
+
+            document.addEventListener("mousemove", this.onMouseMove);
+            document.addEventListener("mouseup", this.onMouseUp, { once: true });
+        });
+    }
+
+    onMouseMove(event) {
+        if (!this.currentElement) return;
+        event.preventDefault();
+        this.currentElement.style.left = `${event.clientX - this.offsetX}px`;
+        this.currentElement.style.top = `${event.clientY - this.offsetY}px`;
+    }
+
+    onMouseUp(event) {
+        if (!this.currentElement) return;
+        event.preventDefault();
+
+        // Event-Listener entfernen
+        document.removeEventListener("mousemove", this.onMouseMove);
+        document.removeEventListener("mouseup", this.onMouseUp);
+
+        // Andere Figuren wieder aktivieren
+        const allPieces = this.board.querySelectorAll(".piece");
+        allPieces.forEach(p => {
+            p.style.pointerEvents = "";
+        });
+
+        const piece = this.currentElement;
+        piece.classList.remove("drag");
+        piece.style.zIndex = "";
+
+        // Zielposition berechnen
+        const boardRect = this.board.getBoundingClientRect();
+        const x = event.clientX - boardRect.left;
+        const y = event.clientY - boardRect.top;
+
+        // Alte Position merken
+        const oldField = Number(piece.dataset.position);
+        let newField = oldField; // Default: keine Änderung
+
+        // Prüfen ob innerhalb des Bretts
+        if (x >= 0 && y >= 0 && x <= boardRect.width && y <= boardRect.height) {
+            const col = Math.floor(x / this.sizeField);         // 0 = a, 7 = h
+            const rowFromTop = Math.floor(y / this.sizeField);  // 0 = oben, 7 = unten
+            const rankFromBottom = 7 - rowFromTop;              // 0 = Reihe 1 (unten)
+            const field = rankFromBottom * 8 + col;             // Bitboard-Index
+            newField = field;
+
+            const isValide = this.validMoves.includes(newField);
+
+            if (isValide) {
+                // Zug unter den validen Zügen
+                this.playSound('move');
+                piece.dataset.position = String(field);             // Positon für Figur in dataset speichern
+                const { x: nx, y: ny } = this.getSquareCenter(field);
+                piece.style.left = nx + "px";
+                piece.style.top = ny + "px";
+                this.changeMoveRight();
+
+            } else {
+                //Position nicht unter den validen Zügen - zurücksetzen
+                this.playSound('error');
+                const oldField = parseInt(piece.dataset.position, 10);
+                const { x: ox, y: oy } = this.getSquareCenter(oldField);
+                piece.style.left = ox + "px";
+                piece.style.top = oy + "px";
+            }
+
+        } else {
+            // Position ausserhalb des Brettes - zurücksetzen
+            this.playSound('error');
+            const oldField = parseInt(piece.dataset.position, 10);
+            const { x: ox, y: oy } = this.getSquareCenter(oldField);
+            piece.style.left = ox + "px";
+            piece.style.top = oy + "px";
+        }
+
+        this.clearHighlights();
+        this.currentElement = null;
+        document.body.style.cursor = "default";
+    }
+
+    async setFenPuzzle() {
+        this.setBoardSize();
+        this.fen = await FenFactory.fromPuzzle(); 
+        this.createPieces(); 
+    }
+
+    setFenStart() {
+        this.setBoardSize();
+        this.fen = FenFactory.fromStart(); // synchron
+        this.createPieces();
+    }
+
+    setFenVariable(fenString) {
+        this.setBoardSize();
+        this.fen = FenFactory.fenZuFigurenListe(fenString);
+        this.createPieces();
+    }
+    
+    changeMoveRight() {
+        this.fen.moveRight = (this.fen.moveRight === "w" ? "b" : "w");
+    }
+
+    playSound(type){
+        if (this.loadedMedia && this.loadedMedia[type]) {
+                this.loadedMedia[type].play().catch(() => {});
+        }
+    }
+
+    flipBoard() {
+        this.container.classList.toggle('flipped');
+    }
+
+
+}

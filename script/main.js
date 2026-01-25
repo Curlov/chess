@@ -1,0 +1,78 @@
+import DeviceCheck from './core/DeviceCheck.js';
+import MediaLoader from './core/MediaLoader.js';
+import ChessBoard from './core/ChessBoard.js';
+import GameController from './core/GameController.js';
+import MoveList from './core/MoveList.js';
+import { lanToField, fieldToLan, fenZuFigurenListe, getStartFen, getPuzzleFen } from './utils/utilitys.js';
+
+
+// Hier wird geprüft, ob es sich um ein mobiles Device handelt oder um einen Desktop
+const device = DeviceCheck.isMobile() ? "mobile" : "desktop";
+let mediaUrls;
+
+if (!device) {
+    console.log(device);
+    // Abbruch, wenn kein Desktop-Rechner mit Maus identifiziert wurde
+    document.querySelector(".progress-text").innerText = "Abbruch, es konnte kein Device identifiziert werden!";
+} else {
+    console.log(device);
+    // Media Link-Liste für große Dateien
+    mediaUrls = [
+        "./src/img/large/board.png", "./src/img/pieces/bb.svg", "./src/img/pieces/bk.svg", "./src/img/pieces/bn.svg",
+        "./src/img/pieces/bp.svg", "./src/img/pieces/br.svg", "./src/img/pieces/bq.svg", "./src/img/pieces/wb.svg",
+        "./src/img/pieces/wk.svg", "./src/img/pieces/wn.svg", "./src/img/pieces/wp.svg", "./src/img/pieces/wr.svg",
+        "./src/img/pieces/wq.svg"
+    ];
+}
+
+const useBackgroundImg = false;
+let sizeChessBoard = 900;
+const width  = window.innerWidth;
+
+if (width <= sizeChessBoard) {
+    sizeChessBoard = width;
+}
+
+if (useBackgroundImg === true) {
+    sizeChessBoard = Math.floor(sizeChessBoard / 9) * 9;
+}
+
+// Hier geht es nur weiter, wenn mediaUrls entsprechende Links enthält - sonst sauberer Abbruch
+if (mediaUrls != null) {
+    window.addEventListener("load", () => {
+        const mediaLoader = new MediaLoader(mediaUrls);
+        mediaLoader.loadMedia().then(() => {
+            const mediaMemory = mediaLoader.getLoadedMedia();
+
+            // Worker zum Berechnen der erlaubten Züge
+            const b1 = new ChessBoard("#b1", mediaMemory, device, {
+                interactive: true, 
+                ownColorOnly: false, 
+                showLegalMoves: true, 
+                showSelectedField: true,
+                showMoves: true, 
+                soundON: true,
+                sizeChessBoard: sizeChessBoard,
+                isWhite: true,    
+                useBackgroundImg: useBackgroundImg          
+            });
+
+            const mL1 = new MoveList();
+            const c1 = new GameController(b1, mL1);
+
+            getPuzzleFen().then((x)=> c1.initPosition(x));
+
+            // global machen:
+            window.c1 = c1;
+            window.getStartFen = getStartFen;
+            window.getPuzzleFen = getPuzzleFen;
+
+        });
+    });
+}
+
+// stoppt scrollen auf dem handy!
+document.addEventListener('touchmove', (e) => {
+    e.preventDefault();
+}, { passive: false });
+

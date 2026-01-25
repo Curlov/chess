@@ -1,0 +1,211 @@
+:root {
+    --field: 50px;
+    --allFields: 400px;
+    --rims: 50px;
+    --chessBoard: 450px;
+    --pieces: 45px;
+    --piece-rotation: 0deg;
+}
+
+.square-light {
+    background-color: #c0a98e; /* helles Feld */
+}
+
+.square-dark {
+    background-color: #2f2f2f; /* dunkles Feld */
+}
+
+* {
+    user-select: none;
+}
+
+html  {
+    height: 100%;
+    overflow: hidden;
+}
+
+.body {
+    background-color: #232323;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+    height: 100vh;
+    margin: 0;
+    overflow: hidden; 
+}
+
+.boardContainer {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    position: relative;
+    width: var(--chessBoard);
+    height: var(--chessBoard);
+    transition: transform 0.3s ease;
+    /* Hintergrund kommt vom JS */
+    background-size: cover;
+    background-position: center center;
+    background-repeat: no-repeat;
+}
+
+.boardContainer::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: inherit; /* nimmt background-image vom Container */
+    z-index: 0;
+    transform-origin: center center;
+    transform: rotate(0deg);
+    shape-rendering: geometricPrecision;
+}
+
+.boardContainer.flipped::before {
+    transform: rotate(180deg); /* Brettgrafik drehen */
+}
+
+.board {
+    z-index: 1; /* über dem Brett-Hintergrund */
+    display: grid;
+    grid-template-columns: repeat(8, var(--field));
+    grid-template-rows: repeat(8, var(--field));
+    width: var(--allFields);
+    height: var(--allFields);
+    position: relative;
+}
+
+.square {
+    width: var(--field);
+    height: var(--field);
+    display: flex;
+    justify-content: center;
+    position: relative;
+    align-items: center; 
+}
+
+.piece {
+    width: var(--pieces);
+    height: var(--pieces);
+    cursor: grab;
+    position: absolute;
+    transition: transform 0.2s ease, filter 0.2s ease;
+    --piece-scale: 1; /* Default */
+    transform: translate(-50%, -50%) scale(var(--piece-scale)) rotate(var(--piece-rotation));
+    filter: drop-shadow(3px 3px 3px rgba(0, 0, 0, 0.8));
+    will-change: transform;
+    shape-rendering: geometricPrecision;
+    z-index: 10;
+}
+
+.board.nonInteractive .piece {
+    cursor: default;
+    -webkit-user-drag: none;
+    user-select: none;
+}
+
+.piece.drag {
+    z-index: 9999;
+    pointer-events: none !important;
+    position: absolute;
+    transition: transform 0.2s ease, filter 0.2s ease;
+    transform: translate(-50%, -50%) scale(calc(var(--piece-scale) * 1.25)) rotate(var(--piece-rotation));
+    filter: drop-shadow(9px 9px 9px rgba(0, 0, 0, 0.9));
+    will-change: transform;
+    shape-rendering: geometricPrecision;
+}
+
+/* Nur für automatische Animation (optischer Lift-Effekt) */
+.piece.moving {
+    z-index: 9999;
+    position: absolute;
+    transition: transform 0.2s ease, filter 0.2s ease;
+    transform: translate(-50%, -50%) scale(calc(var(--piece-scale) * 1.25)) rotate(var(--piece-rotation));
+    filter: drop-shadow(9px 9px 9px rgba(0, 0, 0, 0.8));
+}
+
+.piece.removing {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(calc(var(--piece-scale) * 1.9));
+    z-index: 9;
+    pointer-events: none;
+    transition:
+        transform 0.8s ease,
+        filter    0.8s ease,
+        opacity   0.8s ease;
+}
+
+.preloader {
+    background-color: #232323;
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    z-index: 9999;
+}
+
+.progress-bar {
+    position: relative;
+    width: 80%;
+    height: 20px;
+    background-color: #ddd;
+    border-radius: 5px;
+}
+
+.progress {
+    height: 100%;
+    background-color: #47833e;
+    width: 0;
+    border-radius: 5px;
+}
+
+.progress-text {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    color: #000000;
+    font-weight: bold;
+    z-index: 1;
+}
+
+.square {
+    position: relative;
+}
+
+.square::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 400ms ease;
+    background: transparent;
+}
+
+/* feld Signalfarbe "s" */
+.square.s-color::after {
+    background: rgba(252, 152, 1, 0.5);
+    /*border-radius: 50%; 
+    inset: 15%;*/
+}
+
+/* feld Signalfarbe "f" */
+.square.f-color::after {
+    background: rgba(88, 126, 47, 0.521);
+    /*border-radius: 50%; 
+    inset: 25%;*/
+}
+
+/* feld Signalfarbe "c" */
+.square.c-color::after {
+    background: rgba(211, 11, 11, 0.6);
+    border-radius: 50%; 
+}
+
+.square.show::after {
+    opacity: 1;
+}

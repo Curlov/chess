@@ -1,0 +1,290 @@
+# ChessBoard – Koordinatensysteme & Flip-Logik
+
+In der `ChessBoard`-Klasse gibt es im Prinzip **3 Ebenen von Koordinaten**:
+
+1. **Logische Felder** `0..63`  
+   → Engine, Worker, FEN, `piece.dataset.position`, `square.dataset.field`
+2. **DOM-Squares** (`.square`)  
+   → 64 Divs im Grid, immer gleich angeordnet
+3. **Pixelkoordinaten** innerhalb des Boards  
+   → für Drag & Drop, Animationen, Positionierung der Figuren
+
+`isFlipped` steuert **nur**, wie diese Ebenen aufeinander abgebildet werden – nicht, wie die Engine denkt.
+
+---
+
+## 1. Logische Felder (`0..63`)
+
+Das ist die Sicht der Engine / des Workers / der FEN:
+
+- Index `0..63` entspricht einem Feld auf dem Schachbrett.
+- Nummerierung **immer aus Weiß-Sicht** (Bitboard-Style):
+
+  - `0`  = a1  
+  - `7`  = h1  
+  - `56` = a8  
+  - `63` = h8  
+
+Verwendet in:
+
+- `piece.dataset.position`
+- `this.fen.figuresPosition`
+- `this.validMoves` (vom Worker)
+- `getSquareCenter(field)`
+- `getFieldFromCoords(...)` (Rückgabe)
+- `getPieceAt(field)`
+- `move(fromField, toField)` / `animateMovePiece(...)`
+
+**Merksatz:**  
+Alles, was mit Regeln, Zügen, Engine zu tun hat, arbeitet mit **logischen Feldern** `0..63` (Weiß-Sicht).
+
+---
+
+## 2. DOM-Squares (`.square`)
+
+Beim Erzeugen des Boards:
+
+```js
+square.dataset.field    = ((row - 1) * 8 + (col - 1)).toString();
+square.dataset.notation = `${columnLetter}${row}`;
+```
+
+- `data-field` ist **ebenfalls** ein logischer Index `0..63`, aus Weiß-Sicht.
+- Die `.square`-Elemente werden **nicht gedreht**. Sie bilden ein statisches 8×8-Raster im DOM.
+
+Verwendung:
+
+- `highlight()` sucht Squares über `data-field`:
+  ```js
+  const sq = this.board.querySelector(
+      `.square[data-field="${displayField}"]`
+  );
+  ```
+- `updateNotations()` nutzt `data-field` als Basis, um `data-notation` je nach `isFlipped` anzupassen.
+
+**Wichtig:**  
+Die Squares sind dein „Raster“. Der Flip passiert in der Abbildung **logisch ↔ Anzeige**, nicht durch physikalisches Drehen der DOM-Elemente.
+
+---
+
+## 3. Pixelkoordinaten (Positionierung & Drag)
+
+Hier laufen Drag & Drop, Animation und Hit-Tests.
+
+### 3.1. Figur auf Brett zeichnen
+
+```js
+const { x, y } = this.getSquareCenter(field);
+piece.style.left = x + "px";
+piece.style.top  = y + "px";
+```
+
+- Input: `field` = logisches Feld `0..63`
+- Output: `x, y` = Pixelkoordinaten relativ zum `.board` (oben links = `0,0`)
+
+`getSquareCenter(field)`:
+
+```js
+getSquareCenter(field) {
+    const f = Number(field);
+    const file = f % 8;                  // 0..7 (0 = a)
+    const rankFromBottom = Math.floor(f / 8); // 0..7 (0 = 1. Reihe unten)
+
+    let col        = file;
+    let rowFromTop = 7 - rankFromBottom; // 0 = oben
+
+    if (this.isFlipped) {
+        col        = 7 - col;
+        rowFromTop = 7 - rowFromTop;
+    }
+
+    const x = (col + 0.5) * this.sizeField;
+    const y = (rowFromTop + 0.5) * this.sizeField;
+    return { x, y };
+}
+```
+
+- Ohne Flip (`isFlipped = false`):  
+  logisches Feld 0 (a1) landet unten links.
+- Mit Flip (`isFlipped = true`):  
+  logisches Feld 0 (a1) landet oben rechts – passend zur „Schwarz-Sicht“.
+
+**Effekt:**  
+Die Engine denkt weiter in Weiß-Sicht, die View zeichnet Figuren dort, wo sie in der gewählten Perspektive sichtbar sein sollen.
+
+---
+
+### 3.2. Koordinaten → Feld (z. B. beim Loslassen der Figur)
+
+Im `onMouseUp`:
+
+```js
+const centerX = parseFloat(piece.style.left);
+const centerY = parseFloat(piece.style.top);
+const field   = this.getFieldFromCoords(centerX, centerY);
+```
+
+`getFieldFromCoords(x, y)`:
+
+```js
+getFieldFromCoords(x, y) {
+    let col        = Math.floor(x / this.sizeField);
+    let rowFromTop = Math.floor(y / this.sizeField);
+
+    if (this.isFlipped) {
+        col        = 7 - col;
+        rowFromTop = 7 - rowFromTop;
+    }
+
+    const rankFromBottom = 7 - rowFromTop;
+    return rankFromBottom * 8 + col;
+}
+```
+
+- mappt Pixelkoordinaten zurück auf ein logisches Feld `0..63`
+- berücksichtigt denselben Flip wie `getSquareCenter`
+
+**Wichtig:**  
+`getFieldFromCoords` ist die **Inverse** von `getSquareCenter`.  
+Egal ob Flip aktiv ist oder nicht:  
+*Eine Figur, die auf Feld X sichtbar liegt, ergibt wieder das passende logische Feld.*
+
+---
+
+## 4. Flip-Verhalten
+
+Die Flip-Funktion:
+
+```js
+flipBoard() {
+    this.isFlipped = !this.isFlipped;
+    this.container.classList.toggle("flipped", this.isFlipped);
+    this.redrawAllPieces();
+    this.updateNotations(); 
+}
+```
+
+Schritte:
+
+1. `this.isFlipped` wird umgeschaltet  
+   → ab jetzt rechnen `getSquareCenter` und `getFieldFromCoords` in der jeweiligen Sicht.
+
+2. `classList.toggle("flipped")`  
+   → wird in CSS verwendet (z. B. um das Brett-Sprite oder die Figur-Rotation visuell zu drehen).  
+   → ändert **nichts** an den logischen Feldern.
+
+3. `redrawAllPieces()`  
+   → liest für jede Figur `dataset.position` (logisches Feld) und setzt sie neu mit `getSquareCenter(field)`  
+   → so „springen“ die Figuren in die passende Ansicht.
+
+4. `updateNotations()`  
+   → berechnet `data-notation` neu, damit die Koordinaten (a1..h8) zur aktuellen Ansicht und zum Board-Sprite passen.
+
+---
+
+## 5. Highlighting: Legal Move → Visuelles Feld
+
+`highlight(fields, type = "f")` ist die Stelle, an der du von **logischer Engine-Sicht** auf das richtige DOM-Square für die Anzeige wechselst:
+
+```js
+highlight(fields, type = "f") {
+    const colorClass = (type === "f") ? "f-color" : "c-color";
+
+    if (fields == null) return;
+    if (!Array.isArray(fields)) fields = [fields];
+
+    fields.forEach(f => {
+        const logicalField = Number(f);
+        const displayField = this.isFlipped ? 63 - logicalField : logicalField;
+
+        const sq = this.board.querySelector(`.square[data-field="${displayField}"]`);
+        if (!sq) return;
+
+        sq.classList.add(colorClass);
+        sq.classList.add("show");
+    });
+}
+```
+
+- `logicalField` kommt vom Worker/Engine (0..63, Weiß-Sicht).
+- `displayField` ist das Feld, dessen Square im DOM tatsächlich leuchten soll.
+
+Beispiele:
+
+- Brett **nicht** geflippt (`isFlipped = false`):  
+  `displayField = logicalField` → 1:1
+
+- Brett **geflippt** (`isFlipped = true`):  
+  `displayField = 63 - logicalField`  
+  → `0` (a1) wird zu 63, `7` (h1) zu 56, usw.  
+  → die Highlights spiegeln sich passend zum gedrehten Board.
+
+In Kombination mit einem gedrehten Board-Sprite (per CSS) landet das Highlight dadurch immer **optisch auf dem richtigen Quadrat** (also dort, wo auf dem Bild der entsprechende Buchstabe/Zahl steht).
+
+---
+
+## 6. `data-notation`: Sichtbare Koordinaten
+
+Beim Erzeugen des Boards:
+
+```js
+square.dataset.notation = `${columnLetter}${row}`;
+```
+
+Das ist erst einmal die **Weiß-Sicht** (klassisch a1 unten links, h8 oben rechts).
+
+`updateNotations()` sorgt dafür, dass `data-notation` mit der aktuellen Brettansicht übereinstimmt:
+
+```js
+updateNotations() {
+    const squares = this.board.querySelectorAll(".square");
+
+    squares.forEach(sq => {
+        const logicalField = Number(sq.dataset.field); // 0..63, immer Weiß-Sicht
+
+        let file = logicalField % 8;                     // 0..7 (0=a)
+        let rankFromBottom = Math.floor(logicalField / 8); // 0..7 (0=1. Reihe)
+
+        if (this.isFlipped) {
+            file = 7 - file;
+            rankFromBottom = 7 - rankFromBottom;
+        }
+
+        const fileLetter = String.fromCharCode('a'.charCodeAt(0) + file);
+        const rankNumber = rankFromBottom + 1; // 1..8
+
+        sq.dataset.notation = `${fileLetter}${rankNumber}`;
+    });
+}
+```
+
+- Basis ist immer `logicalField` (`data-field`) aus Sicht von Weiß.
+- Für die Anzeige (sichtbare Notation) wird ggf. gespiegelt.
+
+Damit bedeutet:
+
+- Engine & Worker: `0` ist immer a1 (Weiß-Sicht).
+- DOM:
+  - `data-field` = logisches Feld
+  - `data-notation` = das, was der Spieler **gerade an dieser Stelle auf dem Board sieht**, abhängig von `isFlipped`.
+
+---
+
+## 7. TL;DR
+
+- **Einzige interne Wahrheit:** `logicalField` `0..63` (Weiß-Sicht – Engine, Worker, FEN).
+- Figuren:
+  - `piece.dataset.position` = `logicalField`
+  - Darstellung über `getSquareCenter(field)` → Pixelposition, berücksichtigt `isFlipped`.
+- Maus:
+  - `getFieldFromCoords(x, y)` → `logicalField`, ebenfalls mit `isFlipped` kompatibel.
+- Squares:
+  - `data-field` = `logicalField` (statisch, Weiß-Sicht)
+  - `data-notation` = sichtbare Koordinate (mit `updateNotations()` an Flip angepasst).
+- Highlights:
+  - erhalten logische Felder von der Engine (`validMoves`)
+  - mappen bei Anzeige auf `displayField = isFlipped ? 63 - logicalField : logicalField`.
+
+**Leitsatz:**  
+Die Engine/Logik sieht das Brett immer gleich.  
+Die View (Figuren, Highlights, Notation, Sprite) wird nur „drübergelegt“ und per `isFlipped` passend gedreht bzw. gespiegelt.
