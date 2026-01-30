@@ -50,7 +50,7 @@ if (mediaUrls != null) {
                 showLegalMoves: true, 
                 showSelectedField: true,
                 showMoves: true, 
-                soundON: true,
+                soundON: device === "desktop",
                 sizeChessBoard: sizeChessBoard,
                 isWhite: true,    
                 useBackgroundImg: useBackgroundImg          

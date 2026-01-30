@@ -56,7 +56,7 @@ export default class ChessBoard {
         for (const type of this.soundTypes) {
             const audio = new Audio(this.soundBase + type + '.mp3');
             audio.preload = 'auto';
-            audio.volume = 0.1; // direkt leiser
+            audio.volume = 1; // volle Lautstärke
             this.sounds[type] = audio;
         }
 
