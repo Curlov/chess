@@ -519,7 +519,7 @@ export default class ChessBoard {
             allPieces.forEach(p => p.style.pointerEvents = "");
 
            	// Optional: Zielfeld hervorheben
-           	if (this.showMoves) {
+            if (this.showMoves && highlightMove) {
                 this.highlight(to, "f");
             }
 
