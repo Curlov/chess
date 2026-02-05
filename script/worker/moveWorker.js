@@ -29,7 +29,8 @@ self.onmessage = async function (e) {
     }
 
     if (action === "apply") {
-        const fen = apply_move(data.fen || "", Number(data.from), Number(data.to));
+        const promotion = typeof data.promotion === "string" ? data.promotion : "";
+        const fen = apply_move(data.fen || "", Number(data.from), Number(data.to), promotion);
         self.postMessage({ action: "apply", fen });
         return;
     }

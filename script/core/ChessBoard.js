@@ -72,6 +72,11 @@ export default class ChessBoard {
 
         // Assets (Bilder, Sounds, Board-Sprite usw.)
         this.loadedMedia = loadedMedia;
+        this.promotionOverlay = null;
+        this.promotionDialog  = null;
+        this.promotionPending = false;
+        this.promotionPromise = null;
+        this.enPassantField   = null;
 
         // FEN-/Spielzustand
         this.figurenListe = [];       // Liste mit Figuren und Positionen
@@ -83,6 +88,7 @@ export default class ChessBoard {
 
         // CSS-Variablen für Größen setzen und ggf. existierende Figuren neu positionieren
         this.setBoardSize();
+        this.initPromotionOverlay();
         // Grid-Struktur (64 Squares) + Background setzen + Drag aktivieren
         this.createBoard();
         // Drag für Maus ist schon in createBoard() aktiviert
@@ -174,6 +180,112 @@ export default class ChessBoard {
         // Notation optional an Flip-Sicht anpassen (z.B. damit sie mit dem Brett-Sprite übereinstimmt)
         this.updateNotations(); 
         if (!this.isWhite) this.flipBoard();
+    }
+
+    initPromotionOverlay() {
+        const overlay = this.container.querySelector(".promotion-overlay");
+        if (!overlay) {
+            console.warn("Promotion-Overlay nicht gefunden");
+            return;
+        }
+
+        let dialog = overlay.querySelector(".promotion-dialog");
+        if (!dialog) {
+            dialog = document.createElement("div");
+            dialog.classList.add("promotion-dialog");
+            overlay.appendChild(dialog);
+        }
+
+        this.promotionOverlay = overlay;
+        this.promotionDialog = dialog;
+    }
+
+    requestPromotion(color) {
+        const defaultPiece = color === "w" ? "Q" : "q";
+
+        if (!this.promotionOverlay || !this.promotionDialog) {
+            return Promise.resolve(defaultPiece);
+        }
+
+        if (this.promotionPending && this.promotionPromise) {
+            return this.promotionPromise;
+        }
+
+        const pieces = color === "w" ? ["Q", "R", "B", "N"] : ["q", "r", "b", "n"];
+        this.promotionDialog.innerHTML = "";
+
+        pieces.forEach((piece) => {
+            const btn = document.createElement("button");
+            btn.type = "button";
+            btn.classList.add("promotion-choice");
+            btn.dataset.piece = piece;
+
+            const imgKey = this.fenTypeToImgType[piece];
+            const img = this.loadedMedia[imgKey];
+
+            if (img) {
+                const icon = document.createElement("img");
+                icon.src = img.src;
+                icon.alt = piece;
+                btn.appendChild(icon);
+            } else {
+                btn.textContent = piece.toUpperCase();
+            }
+
+            this.promotionDialog.appendChild(btn);
+        });
+
+        this.promotionOverlay.classList.add("show");
+        this.promotionOverlay.setAttribute("aria-hidden", "false");
+        this.promotionPending = true;
+
+        this.promotionPromise = new Promise((resolve) => {
+            const handleClick = (event) => {
+                const btn = event.target.closest(".promotion-choice");
+                if (!btn) return;
+
+                const choice = btn.dataset.piece || defaultPiece;
+                this.promotionOverlay.classList.remove("show");
+                this.promotionOverlay.setAttribute("aria-hidden", "true");
+                this.promotionOverlay.removeEventListener("click", handleClick);
+
+                this.promotionPending = false;
+                this.promotionPromise = null;
+                resolve(choice);
+            };
+
+            this.promotionOverlay.addEventListener("click", handleClick);
+        });
+
+        return this.promotionPromise;
+    }
+
+    promotePiece(fromField, toField, newType) {
+        let piece = this.getPieceAt(toField);
+        if (!piece) {
+            piece = this.getPieceAt(fromField);
+        }
+        if (!piece) {
+            console.warn("promotePiece: keine Figur gefunden", { fromField, toField });
+            return;
+        }
+
+        const imgKey = this.fenTypeToImgType[newType];
+        const img = this.loadedMedia[imgKey];
+
+        piece.dataset.type = newType;
+
+        if (img) {
+            piece.src = img.src;
+        }
+
+        if (newType.toLowerCase() === "p") {
+            piece.dataset.scale = "0.8";
+            piece.style.setProperty('--piece-scale', '0.8');
+        } else {
+            piece.dataset.scale = "1.0";
+            piece.style.setProperty('--piece-scale', '1.0');
+        }
     }
 
     // Erzeugt alle Figuren anhand der aktuellen FEN-Daten in this.fen
@@ -299,7 +411,8 @@ export default class ChessBoard {
     }
 
     // High-Level API: Figur von Feld A nach Feld B bewegen (mit Animation)
-    move(fromField, toField, highlightMove = true, onDone) {
+    move(fromField, toField, highlightMove = true, onDone, options = {}) {
+        const { skipTurnChange = false } = options;
         const piece = this.getPieceAt(fromField); 
         if (!piece) {
             console.warn("Keine Figur auf Feld:", fromField);
@@ -307,7 +420,9 @@ export default class ChessBoard {
         }
 
         this.animateMovePiece(piece, fromField, toField, highlightMove, onDone);
-        this.changesideToMove();
+        if (!skipTurnChange) {
+            this.changesideToMove();
+        }
     }
 
     // Animiert eine Figur von "from" nach "to"
@@ -678,6 +793,7 @@ export default class ChessBoard {
         
         const fen = fenZuFigurenListe(fenString);
         this.sideToMove = fen.moveRight;
+        this.setEnPassant(fen.enpassant);
         this.figurenListe = fen.figuresPosition;
         this.createPieces();
     }
@@ -694,6 +810,14 @@ export default class ChessBoard {
 
     setSideToMove(side) {
         this.sideToMove = side;
+    }
+
+    setEnPassant(ep) {
+        if (!ep || ep === "-") {
+            this.enPassantField = null;
+            return;
+        }
+        this.enPassantField = lanToField(ep);
     }
     
     // Wechselt die Seite, die am Zug ist
@@ -890,15 +1014,56 @@ export default class ChessBoard {
 
     // Beispiel: am Ende von onMouseUp oder deiner Move-Logik
     finishUserMove(oldField, newField) {
-            const from = Number(oldField);
-            const to   = Number(newField);
-            const capturedPiece = this.getPieceAt(newField);         
+        const from = Number(oldField);
+        const to   = Number(newField);
+        let capturedPiece = this.getPieceAt(newField);
+        const movingPiece = this.getPieceAt(oldField);
+
+        if (movingPiece && movingPiece.dataset.type?.toLowerCase() === "p") {
+            if (this.enPassantField != null && to === this.enPassantField && !capturedPiece) {
+                const isWhite = movingPiece.dataset.type === movingPiece.dataset.type.toUpperCase();
+                const capField = isWhite ? to - 8 : to + 8;
+                const epPiece = this.getPieceAt(capField);
+                if (epPiece) {
+                    capturedPiece = epPiece;
+                }
+            }
+        }
+
+        if (movingPiece && movingPiece.dataset.type?.toLowerCase() === "k") {
+            if (Math.abs(to - from) === 2) {
+                this.moveCastleRook(from, to);
+            }
+        }
 
         if (typeof this.onUserMove === "function") {
             this.onUserMove(oldField, newField, capturedPiece);
         } else {
             console.warn("ChessBoard.onUserMove ist nicht gesetzt");
         }
+    }
+
+    moveCastleRook(fromField, toField) {
+        const from = Number(fromField);
+        const to = Number(toField);
+
+        let rookFrom;
+        let rookTo;
+
+        if (to > from) {
+            rookFrom = from + 3;
+            rookTo = from + 1;
+        } else {
+            rookFrom = from - 4;
+            rookTo = from - 1;
+        }
+
+        const rook = this.getPieceAt(rookFrom);
+        if (!rook) {
+            console.warn("moveCastleRook: kein Turm gefunden", { rookFrom, rookTo });
+            return;
+        }
+        this.move(rookFrom, rookTo, false, null, { skipTurnChange: true });
     }
 
   

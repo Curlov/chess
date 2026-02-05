@@ -209,3 +209,47 @@ html  {
 .square.show::after {
     opacity: 1;
 }
+
+.promotion-overlay {
+    position: absolute;
+    inset: 0;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    background: rgba(0, 0, 0, 0.45);
+    z-index: 50;
+}
+
+.promotion-overlay.show {
+    display: flex;
+}
+
+.promotion-dialog {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 12px;
+    padding: 12px;
+    background: rgba(22, 22, 22, 0.95);
+    border: 1px solid rgba(255, 255, 255, 0.15);
+    border-radius: 10px;
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.6);
+}
+
+.promotion-choice {
+    display: grid;
+    place-items: center;
+    padding: 6px;
+    background: #2a2a2a;
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    border-radius: 8px;
+    cursor: pointer;
+}
+
+.promotion-choice:hover {
+    filter: brightness(1.08);
+}
+
+.promotion-choice img {
+    width: calc(var(--pieces) * 1.05);
+    height: calc(var(--pieces) * 1.05);
+}

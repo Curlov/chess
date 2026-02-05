@@ -79,7 +79,7 @@ export default class ValidMovesEngine {
         });
     }
 
-    applyMove(fen, from, to) {
+    applyMove(fen, from, to, promotion = "") {
         //console.log("ValidMovesEngine.applyMove:", { fen, from, to });
 
         if (!this.worker) {
@@ -99,7 +99,8 @@ export default class ValidMovesEngine {
                     action: "apply",
                     fen,
                     from,
-                    to
+                    to,
+                    promotion
                 });
                 //console.log("ValidMovesEngine: postMessage (apply) abgesetzt");
             } catch (err) {

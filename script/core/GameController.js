@@ -52,6 +52,7 @@ export default class GameController {
 
         this.board.renderFen(this.currentMeta.figuresPosition);
         this.board.setSideToMove(this.currentMeta.moveRight);
+        this.board.setEnPassant(this.currentMeta.enpassant);
     }
 
     // Navigation in der History
@@ -84,14 +85,31 @@ export default class GameController {
             }
             
             const fenBefore = this.currentFen;
+            const movingPiece = this.board.getPieceAt(from);
+            let promotion = "";
+
+            if (movingPiece) {
+                const type = movingPiece.dataset.type;
+                if (type && type.toLowerCase() === "p") {
+                    const isWhite = type === type.toUpperCase();
+                    const rank = Math.floor(Number(to) / 8);
+                    const isPromotion = (isWhite && rank === 7) || (!isWhite && rank === 0);
+
+                    if (isPromotion) {
+                        promotion = await this.board.requestPromotion(isWhite ? "w" : "b");
+                        this.board.promotePiece(from, to, promotion);
+                    }
+                }
+            }
 
             // neue FEN aus dem Worker holen
-            const fenAfter = await this.engine.applyMove(fenBefore, from, to);
+            const fenAfter = await this.engine.applyMove(fenBefore, from, to, promotion);
 
             console.log("handleUserMove:", { from, to, fenBefore, fenAfter });
 
             this.currentFen  = fenAfter;
             this.currentMeta = fenZuFigurenListe(fenAfter); 
+            this.board.setEnPassant(this.currentMeta.enpassant);
 
             this.moveList?.addMove({
                 from,
@@ -139,6 +157,4 @@ export default class GameController {
 
 
 }
-
-
 
