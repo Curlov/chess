@@ -797,9 +797,16 @@ fn gen_pawn_moves(pos: &Position, from: u8, color: Color, moves: &mut Vec<Move>)
         }
     }
 
-    // En passant
+    // En passant (nur wenn Datei-Grenzen passen, kein Wrap-around)
     if let Some(ep_sq) = pos.ep {
-        if ep_sq as i16 == cap_left || ep_sq as i16 == cap_right {
+        let mut allow = false;
+        if file > 0 && ep_sq as i16 == cap_left {
+            allow = true;
+        } else if file < 7 && ep_sq as i16 == cap_right {
+            allow = true;
+        }
+
+        if allow {
             let cap_field = if color == Color::White {
                 (ep_sq as i16 - 8) as u8
             } else {

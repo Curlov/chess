@@ -61,4 +61,24 @@ export function getStartFen() {
     return START_FEN;
 }
 
+// Perft-Helfer: nutzt GameController und loggt Ergebnis
+export async function runPerft(controller, depth = 3, fen = null) {
+    if (!controller || typeof controller.perft !== "function") {
+        console.warn("runPerft: GameController fehlt oder ist ungueltig");
+        return null;
+    }
+
+    const targetFen = fen ?? controller.currentFen ?? controller.baseFen ?? getStartFen();
+    console.log("[perft] start", { depth, fen: targetFen });
+    const t0 = performance.now();
+    const result = await controller.perft(depth, targetFen);
+    const ms = performance.now() - t0;
+    if (result && typeof result.nodes === "number") {
+        const timeMs = Number.isFinite(result.ms) ? result.ms : ms;
+        console.log("[perft] done", { depth: result.depth ?? depth, nodes: result.nodes, ms: timeMs });
+    } else {
+        console.log("[perft] done", result);
+    }
+    return result;
+}
 

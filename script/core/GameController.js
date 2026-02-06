@@ -155,6 +155,26 @@ export default class GameController {
         return this.currentMeta.moveRight;  // "w" oder "b"
     }
 
+    async perft(depth = 1, fen = null) {
+        const targetFen = fen ?? this.currentFen ?? this.baseFen;
+        if (!targetFen) {
+            console.warn("perft: keine FEN vorhanden");
+            return null;
+        }
+
+        const d = Number(depth);
+        if (!Number.isFinite(d) || d < 0) {
+            console.warn("perft: ungültige Tiefe", depth);
+            return null;
+        }
+
+        try {
+            return await this.engine.perft(targetFen, d);
+        } catch (err) {
+            console.error("Fehler in perft:", err);
+            return null;
+        }
+    }
+
 
 }
-

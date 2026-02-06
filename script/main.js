@@ -3,7 +3,7 @@ import MediaLoader from './core/MediaLoader.js';
 import ChessBoard from './core/ChessBoard.js';
 import GameController from './core/GameController.js';
 import MoveList from './core/MoveList.js';
-import { lanToField, fieldToLan, fenZuFigurenListe, getStartFen, getPuzzleFen } from './utils/utilitys.js';
+import { lanToField, fieldToLan, fenZuFigurenListe, getStartFen, getPuzzleFen, runPerft } from './utils/utilitys.js';
 
 
 // Hier wird geprüft, ob es sich um ein mobiles Device handelt oder um einen Desktop
@@ -66,6 +66,7 @@ if (mediaUrls != null) {
             window.c1 = c1;
             window.getStartFen = getStartFen;
             window.getPuzzleFen = getPuzzleFen;
+            window.perft = (depth = 3, fen = null) => runPerft(c1, depth, fen);
 
         });
     });

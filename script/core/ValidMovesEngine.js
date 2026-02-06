@@ -25,6 +25,8 @@ export default class ValidMovesEngine {
                 resolve(payload.moves || []);
             } else if (type === "apply") {
                 resolve(payload.fen);
+            } else if (type === "perft") {
+                resolve(payload);
             } else {
                 console.warn("ValidMovesEngine: unbekannter pending-Typ:", type, payload);
                 resolve(payload);
@@ -105,6 +107,33 @@ export default class ValidMovesEngine {
                 //console.log("ValidMovesEngine: postMessage (apply) abgesetzt");
             } catch (err) {
                 console.error("ValidMovesEngine: Fehler bei postMessage (apply):", err);
+                this.pending = null;
+                reject(err);
+            }
+        });
+    }
+
+    perft(fen, depth = 1) {
+        if (!this.worker) {
+            return Promise.reject(new Error("Worker nicht initialisiert"));
+        }
+
+        if (this.pending) {
+            console.warn("ValidMovesEngine: es gibt noch eine offene Anfrage, verwerfe sie.");
+            this.pending = null;
+        }
+
+        return new Promise((resolve, reject) => {
+            this.pending = { resolve, reject, type: "perft" };
+
+            try {
+                this.worker.postMessage({
+                    action: "perft",
+                    fen,
+                    depth
+                });
+            } catch (err) {
+                console.error("ValidMovesEngine: Fehler bei postMessage (perft):", err);
                 this.pending = null;
                 reject(err);
             }
