@@ -59,9 +59,9 @@ if (mediaUrls != null) {
             const mL1 = new MoveList();
             const c1 = new GameController(b1, mL1);
 
-//            getPuzzleFen().then((x)=> c1.initPosition(x));
-            const fen = getStartFen();
-            c1.initPosition(fen);
+            getPuzzleFen().then((x)=> c1.initPosition(x));
+//            const fen = getStartFen();
+//            c1.initPosition(fen);
 
 
             
@@ -70,7 +70,34 @@ if (mediaUrls != null) {
             window.getStartFen = getStartFen;
             window.getPuzzleFen = getPuzzleFen;
             window.perft = (depth = 3, fen = null) => runPerft(c1, depth, fen);
-
+            window.search = (options = {}) => {
+                console.log("[search] start", options);
+                const t0 = performance.now();
+                const p = c1.search(options);
+                p.then((result) => {
+                    const ms = performance.now() - t0;
+                    window.lastSearchResult = result;
+                    window.lastSearchMs = ms;
+                    if (result && typeof result === "object") {
+                        const summary = {
+                            depth: result.depth ?? null,
+                            score: result.score ?? null,
+                            nodes: result.nodes ?? null,
+                            nps: result.nps ?? null,
+                            best: result.best ?? null,
+                            pv: result.pv ?? null,
+                            ms: result.time_ms ?? Math.round(ms)
+                        };
+                        console.log("[search] done", summary);
+                    } else {
+                        console.log("[search] done", { ms, result });
+                    }
+                    console.log("[search] result", result);
+                }).catch((err) => {
+                    console.error("[search] error", err);
+                });
+                return p;
+            };
         });
     });
 }

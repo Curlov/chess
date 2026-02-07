@@ -1,5 +1,5 @@
 // worker/moveWorker.js
-import init, { get_valid_moves, apply_move } from "../engine/pkg/chess_engine.js";
+import init, { get_valid_moves, apply_move, search, search_with_history } from "../engine/pkg/chess_engine.js";
 
 const wasmReady = init().catch((err) => {
     console.error("WASM init failed:", err);
@@ -128,6 +128,41 @@ self.onmessage = async function (e) {
         const nodes = perft(fen, depth);
         const ms = performance.now() - t0;
         self.postMessage({ action: "perft", nodes, depth, ms });
+        return;
+    }
+
+    if (action === "search") {
+        const fen = data.fen || "";
+        const depth = Number(data.depth);
+        const timeMs = Number(data.timeMs ?? data.time_ms ?? 0);
+        const ttMb = Number(data.ttMb ?? data.tt_mb ?? 0);
+
+        if (!fen) {
+            self.postMessage({ action: "search", error: "keine FEN vorhanden" });
+            return;
+        }
+
+        const safeDepth = Number.isFinite(depth) && depth > 0 ? depth : 0;
+        const safeTimeMs = Number.isFinite(timeMs) && timeMs > 0 ? timeMs : 0;
+        const safeTtMb = Number.isFinite(ttMb) && ttMb > 0 ? ttMb : 0;
+
+        const history = typeof data.history === "string" ? data.history : "";
+        const raw = history && history.trim().length > 0
+            ? search_with_history(fen, safeDepth, safeTimeMs, safeTtMb, history)
+            : search(fen, safeDepth, safeTimeMs, safeTtMb);
+        let result = null;
+        try {
+            result = JSON.parse(raw);
+        } catch (err) {
+            console.error("moveWorker: search JSON parse failed:", err, raw);
+            result = { error: "invalid result", raw };
+        }
+
+        if (result && typeof result === "object") {
+            self.postMessage({ action: "search", ...result });
+        } else {
+            self.postMessage({ action: "search", result });
+        }
         return;
     }
 

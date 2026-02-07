@@ -176,5 +176,50 @@ export default class GameController {
         }
     }
 
+    async search(options = {}) {
+        const { depth = 4, timeMs = 0, ttMb = 128, fen = null } = options || {};
+        const targetFen = fen ?? this.currentFen ?? this.baseFen;
+        if (!targetFen) {
+            console.warn("search: keine FEN vorhanden");
+            return null;
+        }
+
+        const d = Number(depth);
+        const t = Number(timeMs);
+        const m = Number(ttMb);
+        if ((!Number.isFinite(d) || d < 0) && (!Number.isFinite(t) || t < 0)) {
+            console.warn("search: ungültige Tiefe/Time", { depth, timeMs });
+            return null;
+        }
+
+        const safeTimeMs = Number.isFinite(t) && t > 0 ? t : 0;
+        const safeDepth = safeTimeMs > 0 ? 0 : (Number.isFinite(d) && d > 0 ? d : 0);
+        const safeTtMb = Number.isFinite(m) && m > 0 ? m : 0;
+
+        let history = "";
+        if (!fen || fen === this.currentFen) {
+            const historyList = [];
+            if (this.baseFen) {
+                historyList.push(this.baseFen);
+            }
+            if (this.moveList && Array.isArray(this.moveList.moves)) {
+                const end = Math.min(this.moveList.index, this.moveList.moves.length - 1);
+                for (let i = 0; i < end; i += 1) {
+                    const entry = this.moveList.moves[i];
+                    if (entry && typeof entry.fenAfter === "string") {
+                        historyList.push(entry.fenAfter);
+                    }
+                }
+            }
+            history = historyList.join("\n");
+        }
+
+        try {
+            return await this.engine.search(targetFen, safeDepth, safeTimeMs, safeTtMb, history);
+        } catch (err) {
+            console.error("Fehler in search:", err);
+            return null;
+        }
+    }
 
 }

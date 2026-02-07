@@ -5,8 +5,9 @@ export default class ValidMovesEngine {
         const workerUrl = new URL("../worker/moveWorker.js", import.meta.url);
         console.log("ValidMovesEngine: Initialisiere Worker mit URL:", workerUrl.href);
 
-        this.worker  = new Worker(workerUrl, { type: "module" });
+        this.worker = new Worker(workerUrl, { type: "module" });
         this.pending = null;
+        this.queue = [];
 
         this.worker.onmessage = (e) => {
             //console.log("ValidMovesEngine: Worker onmessage (raw):", e.data);
@@ -27,10 +28,14 @@ export default class ValidMovesEngine {
                 resolve(payload.fen);
             } else if (type === "perft") {
                 resolve(payload);
+            } else if (type === "search") {
+                resolve(payload);
             } else {
                 console.warn("ValidMovesEngine: unbekannter pending-Typ:", type, payload);
                 resolve(payload);
             }
+
+            this._drainQueue();
         };
 
         this.worker.onerror = (err) => {
@@ -48,7 +53,45 @@ export default class ValidMovesEngine {
                 this.pending = null;
                 reject(err);
             }
+            while (this.queue.length) {
+                const task = this.queue.shift();
+                if (task) {
+                    task.reject(err);
+                }
+            }
         };
+    }
+
+    _enqueue(type, message) {
+        return new Promise((resolve, reject) => {
+            const task = { type, message, resolve, reject };
+            if (this.pending) {
+                this.queue.push(task);
+                return;
+            }
+            this._dispatch(task);
+        });
+    }
+
+    _dispatch(task) {
+        this.pending = { resolve: task.resolve, reject: task.reject, type: task.type };
+        try {
+            this.worker.postMessage(task.message);
+        } catch (err) {
+            this.pending = null;
+            task.reject(err);
+            this._drainQueue();
+        }
+    }
+
+    _drainQueue() {
+        if (this.pending || this.queue.length === 0) {
+            return;
+        }
+        const next = this.queue.shift();
+        if (next) {
+            this._dispatch(next);
+        }
     }
 
     getValidMoves(fen, field) {
@@ -58,26 +101,10 @@ export default class ValidMovesEngine {
             return Promise.reject(new Error("Worker nicht initialisiert"));
         }
 
-        if (this.pending) {
-            console.warn("ValidMovesEngine: es gibt noch eine offene Anfrage, verwerfe sie.");
-            this.pending = null;
-        }
-
-        return new Promise((resolve, reject) => {
-            this.pending = { resolve, reject, type: "moves" };
-
-            try {
-                this.worker.postMessage({
-                    action: "moves",
-                    fen,
-                    field
-                });
-                //console.log("ValidMovesEngine: postMessage (moves) abgesetzt");
-            } catch (err) {
-                console.error("ValidMovesEngine: Fehler bei postMessage (moves):", err);
-                this.pending = null;
-                reject(err);
-            }
+        return this._enqueue("moves", {
+            action: "moves",
+            fen,
+            field
         });
     }
 
@@ -88,28 +115,12 @@ export default class ValidMovesEngine {
             return Promise.reject(new Error("Worker nicht initialisiert"));
         }
 
-        if (this.pending) {
-            console.warn("ValidMovesEngine: es gibt noch eine offene Anfrage, verwerfe sie.");
-            this.pending = null;
-        }
-
-        return new Promise((resolve, reject) => {
-            this.pending = { resolve, reject, type: "apply" };
-
-            try {
-                this.worker.postMessage({
-                    action: "apply",
-                    fen,
-                    from,
-                    to,
-                    promotion
-                });
-                //console.log("ValidMovesEngine: postMessage (apply) abgesetzt");
-            } catch (err) {
-                console.error("ValidMovesEngine: Fehler bei postMessage (apply):", err);
-                this.pending = null;
-                reject(err);
-            }
+        return this._enqueue("apply", {
+            action: "apply",
+            fen,
+            from,
+            to,
+            promotion
         });
     }
 
@@ -118,25 +129,25 @@ export default class ValidMovesEngine {
             return Promise.reject(new Error("Worker nicht initialisiert"));
         }
 
-        if (this.pending) {
-            console.warn("ValidMovesEngine: es gibt noch eine offene Anfrage, verwerfe sie.");
-            this.pending = null;
+        return this._enqueue("perft", {
+            action: "perft",
+            fen,
+            depth
+        });
+    }
+
+    search(fen, depth = 4, timeMs = 0, ttMb = 0, history = "") {
+        if (!this.worker) {
+            return Promise.reject(new Error("Worker nicht initialisiert"));
         }
 
-        return new Promise((resolve, reject) => {
-            this.pending = { resolve, reject, type: "perft" };
-
-            try {
-                this.worker.postMessage({
-                    action: "perft",
-                    fen,
-                    depth
-                });
-            } catch (err) {
-                console.error("ValidMovesEngine: Fehler bei postMessage (perft):", err);
-                this.pending = null;
-                reject(err);
-            }
+        return this._enqueue("search", {
+            action: "search",
+            fen,
+            depth,
+            timeMs,
+            ttMb,
+            history
         });
     }
 

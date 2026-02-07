@@ -1,4 +1,12 @@
 use wasm_bindgen::prelude::*;
+use std::collections::HashMap;
+use std::mem::size_of;
+
+#[wasm_bindgen]
+extern "C" {
+    #[wasm_bindgen(js_namespace = Date, js_name = now)]
+    fn date_now() -> f64;
+}
 
 #[inline]
 // Erzeugt ein Bitboard mit genau einem gesetzten Bit.
@@ -326,6 +334,8 @@ const CASTLE_WK: u8 = 1;
 const CASTLE_WQ: u8 = 2;
 const CASTLE_BK: u8 = 4;
 const CASTLE_BQ: u8 = 8;
+const MATE_SCORE: i32 = 30000;
+const INF_SCORE: i32 = 32000;
 
 // ---------------------------
 // Grundtypen
@@ -348,7 +358,7 @@ impl Color {
     }
 }
 
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, PartialEq, Eq)]
 enum MoveKind {
     Normal,
     EnPassant,
@@ -364,6 +374,7 @@ struct Move {
 }
 
 // Bitboards + Kingsquare (für schnelle Schachprüfung)
+#[derive(Copy, Clone)]
 struct Bitboards {
     white_occ: u64,
     black_occ: u64,
@@ -382,6 +393,58 @@ struct Bitboards {
     bk: u64,
     white_king_sq: u8,
     black_king_sq: u8,
+}
+
+#[inline]
+fn remove_piece(bits: &mut Bitboards, piece: char, sq: u8) {
+    let mask = bb(sq);
+    match piece {
+        'P' => bits.wp &= !mask,
+        'N' => bits.wn &= !mask,
+        'B' => bits.wb &= !mask,
+        'R' => bits.wr &= !mask,
+        'Q' => bits.wq &= !mask,
+        'K' => bits.wk &= !mask,
+        'p' => bits.bp &= !mask,
+        'n' => bits.bn &= !mask,
+        'b' => bits.bb &= !mask,
+        'r' => bits.br &= !mask,
+        'q' => bits.bq &= !mask,
+        'k' => bits.bk &= !mask,
+        _ => {}
+    }
+    if piece.is_ascii_uppercase() {
+        bits.white_occ &= !mask;
+    } else {
+        bits.black_occ &= !mask;
+    }
+    bits.occ &= !mask;
+}
+
+#[inline]
+fn add_piece(bits: &mut Bitboards, piece: char, sq: u8) {
+    let mask = bb(sq);
+    match piece {
+        'P' => bits.wp |= mask,
+        'N' => bits.wn |= mask,
+        'B' => bits.wb |= mask,
+        'R' => bits.wr |= mask,
+        'Q' => bits.wq |= mask,
+        'K' => { bits.wk |= mask; bits.white_king_sq = sq; },
+        'p' => bits.bp |= mask,
+        'n' => bits.bn |= mask,
+        'b' => bits.bb |= mask,
+        'r' => bits.br |= mask,
+        'q' => bits.bq |= mask,
+        'k' => { bits.bk |= mask; bits.black_king_sq = sq; },
+        _ => {}
+    }
+    if piece.is_ascii_uppercase() {
+        bits.white_occ |= mask;
+    } else {
+        bits.black_occ |= mask;
+    }
+    bits.occ |= mask;
 }
 
 // Position aus FEN: Board + Metadaten + Bitboards
@@ -454,21 +517,6 @@ fn rook_attacks(sq: u8, occ: u64) -> u64 {
 // Benötigt nur die Belegung des Boards.
 fn queen_attacks(sq: u8, occ: u64) -> u64 {
     bishop_attacks(sq, occ) | rook_attacks(sq, occ)
-}
-
-#[inline]
-// Wandelt ein Bitboard in eine Feldliste (0..63) um.
-// Iteriert über die gesetzten Bits (LSB-Loop).
-// Reihenfolge ist LSB -> MSB.
-fn bitboard_to_vec(mut bb: u64) -> Vec<u8> {
-    let mut out = Vec::new();
-    while bb != 0 {
-        let lsb = bb & bb.wrapping_neg();
-        let idx = lsb.trailing_zeros() as u8;
-        out.push(idx);
-        bb ^= lsb;
-    }
-    out
 }
 
 // ---------------------------
@@ -941,28 +989,19 @@ fn apply_move_to_board(board: &mut [Option<char>; 64], mv: Move, color: Color, p
 // Prüft die Legalität eines Zuges:
 // Zug simulieren und sicherstellen, dass der eigene König nicht im Schach steht.
 // Weitere Regeln (z.B. Rochade-Bedingungen) sind bereits im Pseudozug enthalten.
-fn is_move_legal(pos: &Position, mv: Move, color: Color) -> bool {
-    // Testzug ausführen und prüfen, ob eigener König danach im Schach steht
-    let mut board = pos.board;
-    apply_move_to_board(&mut board, mv, color, None);
-    let Some(bb) = build_bitboards(&board) else { return false; };
-
-    let test_pos = Position {
-        board,
-        side_to_move: pos.side_to_move,
-        castling: pos.castling,
-        ep: pos.ep,
-        halfmove: pos.halfmove,
-        fullmove: pos.fullmove,
-        bb,
-    };
-
-    !is_in_check(&test_pos, color)
+fn is_move_legal(pos: &mut Position, mv: Move, color: Color) -> bool {
+    if color != pos.side_to_move {
+        return false;
+    }
+    let Some(undo) = make_move_in_place(pos, mv, None) else { return false; };
+    let in_check = is_in_check(pos, color);
+    unmake_move_in_place(pos, mv, None, undo);
+    !in_check
 }
 
 // Findet einen legalen Zug von `from` nach `to` (inkl. Sonderzugtyp).
 // Wird für `apply_move` genutzt, damit nur gültige Züge übernommen werden.
-fn find_legal_move(pos: &Position, from: u8, to: u8) -> Option<Move> {
+fn find_legal_move(pos: &mut Position, from: u8, to: u8) -> Option<Move> {
     let moves = generate_moves_for_piece(pos, from);
     for mv in moves {
         if mv.to == to && is_move_legal(pos, mv, pos.side_to_move) {
@@ -981,7 +1020,7 @@ fn find_legal_move(pos: &Position, from: u8, to: u8) -> Option<Move> {
 #[wasm_bindgen]
 pub fn get_valid_moves(fen: &str, field: u8) -> Vec<u8> {
     // Liefert nur legale Ziele (inkl. Rochade/En-passant)
-    let pos = match parse_fen(fen) {
+    let mut pos = match parse_fen(fen) {
         Some(p) => p,
         None => return Vec::new(),
     };
@@ -1003,7 +1042,7 @@ pub fn get_valid_moves(fen: &str, field: u8) -> Vec<u8> {
     let moves = generate_moves_for_piece(&pos, field);
     let mut legal = Vec::new();
     for mv in moves {
-        if is_move_legal(&pos, mv, color) {
+        if is_move_legal(&mut pos, mv, color) {
             legal.push(mv.to);
         }
     }
@@ -1025,7 +1064,7 @@ pub fn apply_move(fen: &str, from: u8, to: u8, promotion: &str) -> String {
         return fen.to_string();
     }
 
-    let mv = match find_legal_move(&pos, from, to) {
+    let mv = match find_legal_move(&mut pos, from, to) {
         Some(m) => m,
         None => return fen.to_string(),
     };
@@ -1121,6 +1160,1359 @@ pub fn apply_move(fen: &str, from: u8, to: u8, promotion: &str) -> String {
         "{} {} {} {} {} {}",
         new_board_part, new_side, new_castling, new_ep_str, halfmove, fullmove
     )
+}
+
+// ---------------------------
+// Search (einfaches Alpha-Beta)
+// ---------------------------
+#[inline]
+fn now_ms() -> f64 {
+    date_now()
+}
+
+fn piece_value(piece: char) -> i32 {
+    match piece.to_ascii_lowercase() {
+        'p' => 100,
+        'n' => 320,
+        'b' => 330,
+        'r' => 500,
+        'q' => 900,
+        'k' => 0,
+        _ => 0,
+    }
+}
+
+fn evaluate(pos: &Position) -> i32 {
+    let mut score = 0;
+    for sq in 0..64 {
+        if let Some(p) = pos.board[sq] {
+            let v = piece_value(p);
+            if p.is_ascii_uppercase() {
+                score += v;
+            } else {
+                score -= v;
+            }
+        }
+    }
+    if pos.side_to_move == Color::Black {
+        -score
+    } else {
+        score
+    }
+}
+
+fn generate_legal_moves_into(pos: &mut Position, out: &mut Vec<(Move, Option<char>)>) {
+    out.clear();
+    for from in 0u8..64u8 {
+        let moves = generate_moves_for_piece(pos, from);
+        for mv in moves {
+            if is_move_legal(pos, mv, pos.side_to_move) {
+                if let MoveKind::Promotion = mv.kind {
+                    for promo in ['q', 'r', 'b', 'n'] {
+                        out.push((mv, Some(promo)));
+                    }
+                } else {
+                    out.push((mv, None));
+                }
+            }
+        }
+    }
+}
+
+fn generate_legal_moves(pos: &mut Position) -> Vec<(Move, Option<char>)> {
+    let mut out = Vec::new();
+    generate_legal_moves_into(pos, &mut out);
+    out
+}
+
+fn apply_move_to_position(
+    pos: &Position,
+    mv: Move,
+    promotion: Option<char>,
+    hash: u64,
+    zob: &Zobrist,
+) -> Option<(Position, u64)> {
+    let mut board = pos.board;
+    let piece = board[mv.from as usize]?;
+    let color = piece_color(piece);
+    if color != pos.side_to_move {
+        return None;
+    }
+
+    let mut cap_sq = None;
+    let captured_piece = match mv.kind {
+        MoveKind::EnPassant => {
+            let sq = if color == Color::White { mv.to - 8 } else { mv.to + 8 };
+            cap_sq = Some(sq);
+            board[sq as usize]
+        }
+        _ => {
+            let cap = board[mv.to as usize];
+            if cap.is_some() {
+                cap_sq = Some(mv.to);
+            }
+            cap
+        }
+    };
+
+    let mut placed = piece;
+    if let MoveKind::Promotion = mv.kind {
+        let promo = promotion.unwrap_or('q').to_ascii_lowercase();
+        let mut placed_piece = match promo {
+            'q' | 'r' | 'b' | 'n' => promo,
+            _ => 'q',
+        };
+        if piece.is_ascii_uppercase() {
+            placed_piece = placed_piece.to_ascii_uppercase();
+        }
+        placed = placed_piece;
+    }
+
+    let mut bb = pos.bb;
+    remove_piece(&mut bb, piece, mv.from);
+    if let (Some(cap), Some(sq)) = (captured_piece, cap_sq) {
+        remove_piece(&mut bb, cap, sq);
+    }
+
+    apply_move_to_board(&mut board, mv, color, promotion);
+    add_piece(&mut bb, placed, mv.to);
+
+    if mv.kind == MoveKind::Castle {
+        let (rook_from, rook_to) = if color == Color::White {
+            if mv.to == 6 { (7u8, 5u8) } else { (0u8, 3u8) }
+        } else {
+            if mv.to == 62 { (63u8, 61u8) } else { (56u8, 59u8) }
+        };
+        let rook_piece = if color == Color::White { 'R' } else { 'r' };
+        remove_piece(&mut bb, rook_piece, rook_from);
+        add_piece(&mut bb, rook_piece, rook_to);
+    }
+
+    let mut castling = pos.castling;
+    if piece.to_ascii_lowercase() == 'k' {
+        if color == Color::White {
+            castling &= !(CASTLE_WK | CASTLE_WQ);
+        } else {
+            castling &= !(CASTLE_BK | CASTLE_BQ);
+        }
+    }
+    if piece.to_ascii_lowercase() == 'r' {
+        match mv.from {
+            0 => castling &= !CASTLE_WQ,
+            7 => castling &= !CASTLE_WK,
+            56 => castling &= !CASTLE_BQ,
+            63 => castling &= !CASTLE_BK,
+            _ => {}
+        }
+    }
+    if let Some(cap) = captured_piece {
+        if cap.to_ascii_lowercase() == 'r' {
+            match mv.to {
+                0 => castling &= !CASTLE_WQ,
+                7 => castling &= !CASTLE_WK,
+                56 => castling &= !CASTLE_BQ,
+                63 => castling &= !CASTLE_BK,
+                _ => {}
+            }
+        }
+    }
+
+    let mut new_ep = None;
+    if piece.to_ascii_lowercase() == 'p' {
+        let from_rank = mv.from / 8;
+        let to_rank = mv.to / 8;
+        if color == Color::White && from_rank == 1 && to_rank == 3 {
+            new_ep = Some(mv.from + 8);
+        } else if color == Color::Black && from_rank == 6 && to_rank == 4 {
+            new_ep = Some(mv.from - 8);
+        }
+    }
+
+    let mut halfmove = pos.halfmove;
+    let is_capture = match mv.kind {
+        MoveKind::EnPassant => true,
+        _ => captured_piece.is_some(),
+    };
+    if piece.to_ascii_lowercase() == 'p' || is_capture {
+        halfmove = 0;
+    } else {
+        halfmove += 1;
+    }
+
+    let mut fullmove = pos.fullmove;
+    if pos.side_to_move == Color::Black {
+        fullmove += 1;
+    }
+
+    let mut new_hash = hash;
+    new_hash ^= zob.side;
+    new_hash ^= zob.castle[(pos.castling & 0x0F) as usize] ^ zob.castle[(castling & 0x0F) as usize];
+    if let Some(ep) = pos.ep {
+        let file = (ep % 8) as usize;
+        new_hash ^= zob.ep_file[file + 1];
+    }
+    if let Some(ep) = new_ep {
+        let file = (ep % 8) as usize;
+        new_hash ^= zob.ep_file[file + 1];
+    }
+
+    if let Some(idx) = piece_index(piece) {
+        new_hash ^= zob.piece_sq[idx][mv.from as usize];
+    }
+    if let (Some(cap), Some(sq)) = (captured_piece, cap_sq) {
+        if let Some(idx) = piece_index(cap) {
+            new_hash ^= zob.piece_sq[idx][sq as usize];
+        }
+    }
+    if let Some(idx) = piece_index(placed) {
+        new_hash ^= zob.piece_sq[idx][mv.to as usize];
+    }
+    if mv.kind == MoveKind::Castle {
+        let (rook_from, rook_to) = if color == Color::White {
+            if mv.to == 6 { (7usize, 5usize) } else { (0usize, 3usize) }
+        } else {
+            if mv.to == 62 { (63usize, 61usize) } else { (56usize, 59usize) }
+        };
+        let rook_piece = if color == Color::White { 'R' } else { 'r' };
+        if let Some(idx) = piece_index(rook_piece) {
+            new_hash ^= zob.piece_sq[idx][rook_from];
+            new_hash ^= zob.piece_sq[idx][rook_to];
+        }
+    }
+
+    Some((Position {
+        board,
+        side_to_move: pos.side_to_move.opposite(),
+        castling,
+        ep: new_ep,
+        halfmove,
+        fullmove,
+        bb,
+    }, new_hash))
+}
+
+struct Undo {
+    captured: Option<char>,
+    captured_sq: Option<u8>,
+    prev_castling: u8,
+    prev_ep: Option<u8>,
+    prev_halfmove: u32,
+    prev_fullmove: u32,
+    moved_piece: char,
+}
+
+fn make_move_in_place(pos: &mut Position, mv: Move, promotion: Option<char>) -> Option<Undo> {
+    let piece = pos.board[mv.from as usize]?;
+    let color = piece_color(piece);
+    if color != pos.side_to_move {
+        return None;
+    }
+
+    let mut cap_sq = None;
+    let captured = match mv.kind {
+        MoveKind::EnPassant => {
+            let sq = if color == Color::White { mv.to - 8 } else { mv.to + 8 };
+            cap_sq = Some(sq);
+            pos.board[sq as usize]
+        }
+        _ => {
+            let cap = pos.board[mv.to as usize];
+            if cap.is_some() {
+                cap_sq = Some(mv.to);
+            }
+            cap
+        }
+    };
+
+    let undo = Undo {
+        captured,
+        captured_sq: cap_sq,
+        prev_castling: pos.castling,
+        prev_ep: pos.ep,
+        prev_halfmove: pos.halfmove,
+        prev_fullmove: pos.fullmove,
+        moved_piece: piece,
+    };
+
+    remove_piece(&mut pos.bb, piece, mv.from);
+    if let (Some(cap), Some(sq)) = (captured, cap_sq) {
+        remove_piece(&mut pos.bb, cap, sq);
+    }
+
+    apply_move_to_board(&mut pos.board, mv, color, promotion);
+
+    let mut placed = piece;
+    if let MoveKind::Promotion = mv.kind {
+        let promo = promotion.unwrap_or('q').to_ascii_lowercase();
+        let mut placed_piece = match promo {
+            'q' | 'r' | 'b' | 'n' => promo,
+            _ => 'q',
+        };
+        if piece.is_ascii_uppercase() {
+            placed_piece = placed_piece.to_ascii_uppercase();
+        }
+        placed = placed_piece;
+    }
+    add_piece(&mut pos.bb, placed, mv.to);
+
+    if mv.kind == MoveKind::Castle {
+        let (rook_from, rook_to) = if color == Color::White {
+            if mv.to == 6 { (7u8, 5u8) } else { (0u8, 3u8) }
+        } else {
+            if mv.to == 62 { (63u8, 61u8) } else { (56u8, 59u8) }
+        };
+        let rook_piece = if color == Color::White { 'R' } else { 'r' };
+        remove_piece(&mut pos.bb, rook_piece, rook_from);
+        add_piece(&mut pos.bb, rook_piece, rook_to);
+    }
+
+    let mut castling = pos.castling;
+    if piece.to_ascii_lowercase() == 'k' {
+        if color == Color::White {
+            castling &= !(CASTLE_WK | CASTLE_WQ);
+        } else {
+            castling &= !(CASTLE_BK | CASTLE_BQ);
+        }
+    }
+    if piece.to_ascii_lowercase() == 'r' {
+        match mv.from {
+            0 => castling &= !CASTLE_WQ,
+            7 => castling &= !CASTLE_WK,
+            56 => castling &= !CASTLE_BQ,
+            63 => castling &= !CASTLE_BK,
+            _ => {}
+        }
+    }
+    if let Some(cap) = captured {
+        if cap.to_ascii_lowercase() == 'r' {
+            match mv.to {
+                0 => castling &= !CASTLE_WQ,
+                7 => castling &= !CASTLE_WK,
+                56 => castling &= !CASTLE_BQ,
+                63 => castling &= !CASTLE_BK,
+                _ => {}
+            }
+        }
+    }
+
+    let mut new_ep = None;
+    if piece.to_ascii_lowercase() == 'p' {
+        let from_rank = mv.from / 8;
+        let to_rank = mv.to / 8;
+        if color == Color::White && from_rank == 1 && to_rank == 3 {
+            new_ep = Some(mv.from + 8);
+        } else if color == Color::Black && from_rank == 6 && to_rank == 4 {
+            new_ep = Some(mv.from - 8);
+        }
+    }
+
+    let mut halfmove = pos.halfmove;
+    let is_capture = match mv.kind {
+        MoveKind::EnPassant => true,
+        _ => captured.is_some(),
+    };
+    if piece.to_ascii_lowercase() == 'p' || is_capture {
+        halfmove = 0;
+    } else {
+        halfmove += 1;
+    }
+
+    let mut fullmove = pos.fullmove;
+    if pos.side_to_move == Color::Black {
+        fullmove += 1;
+    }
+
+    pos.castling = castling;
+    pos.ep = new_ep;
+    pos.halfmove = halfmove;
+    pos.fullmove = fullmove;
+    pos.side_to_move = pos.side_to_move.opposite();
+
+    Some(undo)
+}
+
+fn unmake_move_in_place(pos: &mut Position, mv: Move, _promotion: Option<char>, undo: Undo) {
+    pos.side_to_move = pos.side_to_move.opposite();
+    pos.castling = undo.prev_castling;
+    pos.ep = undo.prev_ep;
+    pos.halfmove = undo.prev_halfmove;
+    pos.fullmove = undo.prev_fullmove;
+
+    let color = pos.side_to_move;
+    let to = mv.to as usize;
+    let from = mv.from as usize;
+
+    if let Some(p) = pos.board[to] {
+        remove_piece(&mut pos.bb, p, mv.to);
+    }
+    pos.board[to] = None;
+
+    if mv.kind == MoveKind::Castle {
+        let (rook_from, rook_to) = if color == Color::White {
+            if mv.to == 6 { (7u8, 5u8) } else { (0u8, 3u8) }
+        } else {
+            if mv.to == 62 { (63u8, 61u8) } else { (56u8, 59u8) }
+        };
+        let rook_piece = if color == Color::White { 'R' } else { 'r' };
+        if let Some(p) = pos.board[rook_to as usize] {
+            remove_piece(&mut pos.bb, p, rook_to);
+        }
+        pos.board[rook_to as usize] = None;
+        pos.board[rook_from as usize] = Some(rook_piece);
+        add_piece(&mut pos.bb, rook_piece, rook_from);
+    }
+
+    if let (Some(cap), Some(sq)) = (undo.captured, undo.captured_sq) {
+        pos.board[sq as usize] = Some(cap);
+        add_piece(&mut pos.bb, cap, sq);
+    }
+
+    pos.board[from] = Some(undo.moved_piece);
+    add_piece(&mut pos.bb, undo.moved_piece, mv.from);
+}
+
+fn update_hash_after_move(
+    hash: u64,
+    zob: &Zobrist,
+    undo: &Undo,
+    pos_after: &Position,
+    mv: Move,
+) -> u64 {
+    let mut new_hash = hash;
+    new_hash ^= zob.side;
+    new_hash ^=
+        zob.castle[(undo.prev_castling & 0x0F) as usize] ^
+        zob.castle[(pos_after.castling & 0x0F) as usize];
+    if let Some(ep) = undo.prev_ep {
+        let file = (ep % 8) as usize;
+        new_hash ^= zob.ep_file[file + 1];
+    }
+    if let Some(ep) = pos_after.ep {
+        let file = (ep % 8) as usize;
+        new_hash ^= zob.ep_file[file + 1];
+    }
+    if let Some(idx) = piece_index(undo.moved_piece) {
+        new_hash ^= zob.piece_sq[idx][mv.from as usize];
+    }
+    if let (Some(cap), Some(sq)) = (undo.captured, undo.captured_sq) {
+        if let Some(idx) = piece_index(cap) {
+            new_hash ^= zob.piece_sq[idx][sq as usize];
+        }
+    }
+    if let Some(placed) = pos_after.board[mv.to as usize] {
+        if let Some(idx) = piece_index(placed) {
+            new_hash ^= zob.piece_sq[idx][mv.to as usize];
+        }
+    }
+    if mv.kind == MoveKind::Castle {
+        let color = piece_color(undo.moved_piece);
+        let (rook_from, rook_to) = if color == Color::White {
+            if mv.to == 6 { (7usize, 5usize) } else { (0usize, 3usize) }
+        } else {
+            if mv.to == 62 { (63usize, 61usize) } else { (56usize, 59usize) }
+        };
+        let rook_piece = if color == Color::White { 'R' } else { 'r' };
+        if let Some(idx) = piece_index(rook_piece) {
+            new_hash ^= zob.piece_sq[idx][rook_from];
+            new_hash ^= zob.piece_sq[idx][rook_to];
+        }
+    }
+    new_hash
+}
+
+fn move_to_uci(mv: Move, promotion: Option<char>) -> String {
+    let mut out = String::new();
+    out.push_str(&field_to_lan(mv.from));
+    out.push_str(&field_to_lan(mv.to));
+    if let Some(p) = promotion {
+        out.push(p.to_ascii_lowercase());
+    }
+    out
+}
+
+fn capture_info(pos: &Position, mv: Move) -> Option<(u8, char)> {
+    match mv.kind {
+        MoveKind::EnPassant => {
+            let cap_sq = if pos.side_to_move == Color::White {
+                mv.to - 8
+            } else {
+                mv.to + 8
+            };
+            pos.board[cap_sq as usize].map(|p| (cap_sq, p))
+        }
+        _ => pos.board[mv.to as usize].map(|p| (mv.to, p)),
+    }
+}
+
+fn move_is_capture(pos: &Position, mv: Move) -> bool {
+    capture_info(pos, mv).is_some()
+}
+
+fn move_key(mv: Move, promo: Option<char>) -> (u8, u8, u8) {
+    (mv.from, mv.to, encode_promo(promo))
+}
+
+fn is_quiet_move(pos: &Position, mv: Move, promo: Option<char>) -> bool {
+    if let MoveKind::Promotion = mv.kind {
+        return false;
+    }
+    if promo.is_some() {
+        return false;
+    }
+    !move_is_capture(pos, mv)
+}
+
+fn update_killers(ctx: &mut SearchContext, ply: i32, key: (u8, u8, u8)) {
+    if ply < 0 {
+        return;
+    }
+    let idx = ply as usize;
+    if idx >= ctx.killers.len() {
+        return;
+    }
+    if ctx.killers[idx][0] == Some(key) {
+        return;
+    }
+    ctx.killers[idx][1] = ctx.killers[idx][0];
+    ctx.killers[idx][0] = Some(key);
+}
+
+fn update_history_heur(ctx: &mut SearchContext, color: Color, from: u8, to: u8, depth: u32) {
+    let c = if color == Color::White { 0 } else { 1 };
+    let entry = &mut ctx.history_heur[c][from as usize][to as usize];
+    let inc = (depth as i32).saturating_mul(depth as i32);
+    *entry = entry.saturating_add(inc);
+}
+
+struct MoveOrderScratch {
+    captures: Vec<(i32, Move, Option<char>)>,
+    quiet: Vec<(i32, Move, Option<char>)>,
+    rest: Vec<(Move, Option<char>)>,
+}
+
+impl MoveOrderScratch {
+    fn new() -> Self {
+        MoveOrderScratch {
+            captures: Vec::new(),
+            quiet: Vec::new(),
+            rest: Vec::new(),
+        }
+    }
+}
+
+fn capture_score(pos: &Position, mv: Move, promo: Option<char>) -> i32 {
+    let mut score = 0;
+    if let Some(p) = promo {
+        score += 5000 + piece_value(p.to_ascii_lowercase());
+    } else if let MoveKind::Promotion = mv.kind {
+        score += 5000;
+    }
+    if let Some((_, cap)) = capture_info(pos, mv) {
+        let mover = pos.board[mv.from as usize].unwrap_or('P');
+        score += 3000 + piece_value(cap) - piece_value(mover);
+    }
+    score
+}
+
+fn order_moves_in_place(
+    pos: &Position,
+    moves: &mut Vec<(Move, Option<char>)>,
+    tt_entry: Option<TTEntry>,
+    killers: Option<&[Option<(u8, u8, u8)>; 2]>,
+    history_heur: Option<&[[[i32; 64]; 64]; 2]>,
+    scratch: &mut MoveOrderScratch,
+) {
+    let tt_best = tt_entry.and_then(entry_best_move);
+    let mut tt_move: Option<(Move, Option<char>)> = None;
+    let mut killer_moves: [Option<(Move, Option<char>)>; 2] = [None, None];
+    scratch.captures.clear();
+    scratch.quiet.clear();
+    scratch.rest.clear();
+
+    for (mv, promo) in moves.drain(..) {
+        if let Some((bf, bt, bp)) = tt_best {
+            if mv.from == bf && mv.to == bt && promo == bp {
+                tt_move = Some((mv, promo));
+                continue;
+            }
+        }
+
+        let is_capture = move_is_capture(pos, mv) || matches!(mv.kind, MoveKind::Promotion) || promo.is_some();
+        if is_capture {
+            scratch.captures.push((capture_score(pos, mv, promo), mv, promo));
+            continue;
+        }
+
+        let key = move_key(mv, promo);
+        if let Some(k) = killers {
+            if k[0] == Some(key) {
+                killer_moves[0] = Some((mv, promo));
+                continue;
+            }
+            if k[1] == Some(key) {
+                killer_moves[1] = Some((mv, promo));
+                continue;
+            }
+        }
+
+        if let Some(hist) = history_heur {
+            if is_quiet_move(pos, mv, promo) {
+                let c = if pos.side_to_move == Color::White { 0 } else { 1 };
+                scratch.quiet.push((hist[c][mv.from as usize][mv.to as usize], mv, promo));
+                continue;
+            }
+        }
+
+        scratch.rest.push((mv, promo));
+    }
+
+    scratch.captures.sort_by(|a, b| b.0.cmp(&a.0));
+
+    const QUIET_SORT_LIMIT: usize = 12;
+    if scratch.quiet.len() > 1 {
+        if scratch.quiet.len() > QUIET_SORT_LIMIT {
+            scratch.quiet.select_nth_unstable_by(QUIET_SORT_LIMIT, |a, b| b.0.cmp(&a.0));
+            scratch.quiet[..QUIET_SORT_LIMIT].sort_by(|a, b| b.0.cmp(&a.0));
+        } else {
+            scratch.quiet.sort_by(|a, b| b.0.cmp(&a.0));
+        }
+    }
+
+    moves.clear();
+    if let Some(mv) = tt_move {
+        moves.push(mv);
+    }
+    for (_, mv, promo) in scratch.captures.drain(..) {
+        moves.push((mv, promo));
+    }
+    if let Some(mv) = killer_moves[0] {
+        moves.push(mv);
+    }
+    if let Some(mv) = killer_moves[1] {
+        moves.push(mv);
+    }
+    for (_, mv, promo) in scratch.quiet.drain(..) {
+        moves.push((mv, promo));
+    }
+    moves.append(&mut scratch.rest);
+}
+
+fn generate_tactical_moves_into(pos: &mut Position, out: &mut Vec<(Move, Option<char>)>) {
+    out.clear();
+    for from in 0u8..64u8 {
+        let moves = generate_moves_for_piece(pos, from);
+        for mv in moves {
+            if !is_move_legal(pos, mv, pos.side_to_move) {
+                continue;
+            }
+            if move_is_capture(pos, mv) {
+                if let MoveKind::Promotion = mv.kind {
+                    for promo in ['q', 'r', 'b', 'n'] {
+                        out.push((mv, Some(promo)));
+                    }
+                } else {
+                    out.push((mv, None));
+                }
+            } else if let MoveKind::Promotion = mv.kind {
+                for promo in ['q', 'r', 'b', 'n'] {
+                    out.push((mv, Some(promo)));
+                }
+            }
+        }
+    }
+}
+
+fn generate_tactical_moves(pos: &mut Position) -> Vec<(Move, Option<char>)> {
+    let mut out = Vec::new();
+    generate_tactical_moves_into(pos, &mut out);
+    out
+}
+
+// ---------------------------
+// Zobrist + TT
+// ---------------------------
+fn splitmix64(seed: &mut u64) -> u64 {
+    *seed = seed.wrapping_add(0x9E3779B97F4A7C15);
+    let mut z = *seed;
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58476D1CE4E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D049BB133111EB);
+    z ^ (z >> 31)
+}
+
+struct Zobrist {
+    piece_sq: [[u64; 64]; 12],
+    side: u64,
+    castle: [u64; 16],
+    ep_file: [u64; 9],
+}
+
+impl Zobrist {
+    fn new() -> Zobrist {
+        let mut seed = 0xC0FFEE_u64 ^ 0x9E3779B97F4A7C15;
+        let mut piece_sq = [[0u64; 64]; 12];
+        for p in 0..12 {
+            for sq in 0..64 {
+                piece_sq[p][sq] = splitmix64(&mut seed);
+            }
+        }
+        let side = splitmix64(&mut seed);
+        let mut castle = [0u64; 16];
+        for i in 0..16 {
+            castle[i] = splitmix64(&mut seed);
+        }
+        let mut ep_file = [0u64; 9];
+        for i in 0..9 {
+            ep_file[i] = splitmix64(&mut seed);
+        }
+
+        Zobrist { piece_sq, side, castle, ep_file }
+    }
+}
+
+fn piece_index(ch: char) -> Option<usize> {
+    match ch {
+        'P' => Some(0),
+        'N' => Some(1),
+        'B' => Some(2),
+        'R' => Some(3),
+        'Q' => Some(4),
+        'K' => Some(5),
+        'p' => Some(6),
+        'n' => Some(7),
+        'b' => Some(8),
+        'r' => Some(9),
+        'q' => Some(10),
+        'k' => Some(11),
+        _ => None,
+    }
+}
+
+fn compute_hash(pos: &Position, zob: &Zobrist) -> u64 {
+    let mut h = 0u64;
+    for sq in 0..64 {
+        if let Some(p) = pos.board[sq] {
+            if let Some(idx) = piece_index(p) {
+                h ^= zob.piece_sq[idx][sq];
+            }
+        }
+    }
+    if pos.side_to_move == Color::Black {
+        h ^= zob.side;
+    }
+    h ^= zob.castle[(pos.castling & 0x0F) as usize];
+    if let Some(ep) = pos.ep {
+        let file = (ep % 8) as usize;
+        h ^= zob.ep_file[file + 1];
+    }
+    h
+}
+
+const TT_BOUND_EXACT: u8 = 0;
+const TT_BOUND_LOWER: u8 = 1;
+const TT_BOUND_UPPER: u8 = 2;
+
+#[derive(Copy, Clone)]
+struct TTEntry {
+    key: u64,
+    depth: u16,
+    value: i32,
+    bound: u8,
+    best_from: u8,
+    best_to: u8,
+    best_promo: u8,
+}
+
+impl Default for TTEntry {
+    fn default() -> Self {
+        TTEntry {
+            key: 0,
+            depth: 0,
+            value: 0,
+            bound: TT_BOUND_EXACT,
+            best_from: 0,
+            best_to: 0,
+            best_promo: 0,
+        }
+    }
+}
+
+struct TT {
+    entries: Vec<TTEntry>,
+    mask: usize,
+}
+
+impl TT {
+    fn new(tt_mb: u32) -> Option<TT> {
+        if tt_mb == 0 {
+            return None;
+        }
+        let capped_mb = if tt_mb > 256 { 256 } else { tt_mb };
+        let bytes = (capped_mb as usize).saturating_mul(1024 * 1024);
+        let entry_size = size_of::<TTEntry>();
+        if bytes < entry_size {
+            return None;
+        }
+        let n = bytes / entry_size;
+        if n == 0 {
+            return None;
+        }
+        let mut size = 1usize;
+        while size.saturating_mul(2) <= n {
+            size *= 2;
+        }
+        let entries = vec![TTEntry::default(); size];
+        Some(TT { entries, mask: size - 1 })
+    }
+
+    fn probe(&self, key: u64) -> Option<TTEntry> {
+        if self.entries.is_empty() {
+            return None;
+        }
+        let idx = (key as usize) & self.mask;
+        let entry = self.entries[idx];
+        if entry.depth == 0 {
+            return None;
+        }
+        if entry.key == key {
+            Some(entry)
+        } else {
+            None
+        }
+    }
+
+    fn store(&mut self, key: u64, depth: u32, value: i32, bound: u8, best: Option<(Move, Option<char>)>) {
+        if self.entries.is_empty() || depth == 0 {
+            return;
+        }
+        let idx = (key as usize) & self.mask;
+        let cur = self.entries[idx];
+        if cur.key == key && cur.depth > depth as u16 {
+            return;
+        }
+        let (best_from, best_to, best_promo) = if let Some((mv, promo)) = best {
+            (mv.from, mv.to, encode_promo(promo))
+        } else {
+            (0, 0, 0)
+        };
+        self.entries[idx] = TTEntry {
+            key,
+            depth: depth as u16,
+            value,
+            bound,
+            best_from,
+            best_to,
+            best_promo,
+        };
+    }
+}
+
+fn encode_promo(promo: Option<char>) -> u8 {
+    match promo.map(|c| c.to_ascii_lowercase()) {
+        Some('q') => 1,
+        Some('r') => 2,
+        Some('b') => 3,
+        Some('n') => 4,
+        _ => 0,
+    }
+}
+
+fn decode_promo(code: u8) -> Option<char> {
+    match code {
+        1 => Some('q'),
+        2 => Some('r'),
+        3 => Some('b'),
+        4 => Some('n'),
+        _ => None,
+    }
+}
+
+fn entry_best_move(entry: TTEntry) -> Option<(u8, u8, Option<char>)> {
+    if entry.best_from == 0 && entry.best_to == 0 && entry.best_promo == 0 {
+        None
+    } else {
+        Some((entry.best_from, entry.best_to, decode_promo(entry.best_promo)))
+    }
+}
+
+struct SearchContext {
+    nodes: u64,
+    start_ms: f64,
+    time_limit_ms: f64,
+    stop: bool,
+    history: Vec<u64>,
+    rep_counts: HashMap<u64, u8>,
+    killers: Vec<[Option<(u8, u8, u8)>; 2]>,
+    history_heur: [[[i32; 64]; 64]; 2],
+    move_buf: Vec<Vec<(Move, Option<char>)>>,
+    order_scratch: MoveOrderScratch,
+}
+
+#[inline]
+fn history_count(ctx: &SearchContext, hash: u64) -> u8 {
+    ctx.rep_counts.get(&hash).copied().unwrap_or(0)
+}
+
+#[inline]
+fn history_push(ctx: &mut SearchContext, hash: u64) {
+    ctx.history.push(hash);
+    let entry = ctx.rep_counts.entry(hash).or_insert(0);
+    *entry = entry.saturating_add(1);
+}
+
+#[inline]
+fn history_pop(ctx: &mut SearchContext) {
+    if let Some(h) = ctx.history.pop() {
+        if let Some(c) = ctx.rep_counts.get_mut(&h) {
+            if *c > 1 {
+                *c -= 1;
+            } else {
+                ctx.rep_counts.remove(&h);
+            }
+        }
+    }
+}
+
+fn take_move_buf(ctx: &mut SearchContext, ply: i32) -> Vec<(Move, Option<char>)> {
+    let idx = if ply < 0 { 0 } else { ply as usize };
+    if idx >= ctx.move_buf.len() {
+        ctx.move_buf.resize_with(idx + 1, Vec::new);
+    }
+    std::mem::take(&mut ctx.move_buf[idx])
+}
+
+fn restore_move_buf(ctx: &mut SearchContext, ply: i32, buf: Vec<(Move, Option<char>)>) {
+    let idx = if ply < 0 { 0 } else { ply as usize };
+    if idx >= ctx.move_buf.len() {
+        ctx.move_buf.resize_with(idx + 1, Vec::new);
+    }
+    ctx.move_buf[idx] = buf;
+}
+
+fn quiescence(
+    pos: &mut Position,
+    mut alpha: i32,
+    beta: i32,
+    ctx: &mut SearchContext,
+    tt: &mut Option<TT>,
+    zob: &Zobrist,
+    hash: u64,
+    ply: i32,
+) -> i32 {
+    let _ = tt;
+    if ctx.stop {
+        return 0;
+    }
+    if ctx.time_limit_ms > 0.0 && now_ms() - ctx.start_ms >= ctx.time_limit_ms {
+        ctx.stop = true;
+        return 0;
+    }
+    if pos.halfmove >= 100 {
+        return 0;
+    }
+    if history_count(ctx, hash) >= 3 {
+        return 0;
+    }
+
+    ctx.nodes += 1;
+
+    let stand_pat = evaluate(pos);
+    if stand_pat >= beta {
+        return beta;
+    }
+    if stand_pat > alpha {
+        alpha = stand_pat;
+    }
+
+    let in_check = is_in_check(pos, pos.side_to_move);
+    let mut moves = take_move_buf(ctx, ply);
+    if in_check {
+        generate_legal_moves_into(pos, &mut moves);
+    } else {
+        generate_tactical_moves_into(pos, &mut moves);
+    }
+
+    if moves.is_empty() {
+        if in_check {
+            restore_move_buf(ctx, ply, moves);
+            return -MATE_SCORE + ply;
+        }
+        restore_move_buf(ctx, ply, moves);
+        return stand_pat;
+    }
+
+    order_moves_in_place(pos, &mut moves, None, None, None, &mut ctx.order_scratch);
+    for (mv, promo) in moves.iter().copied() {
+        if ctx.stop {
+            break;
+        }
+        let Some(undo) = make_move_in_place(pos, mv, promo) else { continue; };
+        let next_hash = update_hash_after_move(hash, zob, &undo, pos, mv);
+        history_push(ctx, next_hash);
+        let score = -quiescence(pos, -beta, -alpha, ctx, tt, zob, next_hash, ply + 1);
+        history_pop(ctx);
+        unmake_move_in_place(pos, mv, promo, undo);
+        if ctx.stop {
+            break;
+        }
+        if score >= beta {
+            restore_move_buf(ctx, ply, moves);
+            return beta;
+        }
+        if score > alpha {
+            alpha = score;
+        }
+    }
+
+    restore_move_buf(ctx, ply, moves);
+    alpha
+}
+
+fn negamax(
+    pos: &mut Position,
+    depth: u32,
+    mut alpha: i32,
+    beta: i32,
+    ctx: &mut SearchContext,
+    tt: &mut Option<TT>,
+    zob: &Zobrist,
+    hash: u64,
+    ply: i32,
+) -> i32 {
+    if ctx.stop {
+        return 0;
+    }
+    if ctx.time_limit_ms > 0.0 && now_ms() - ctx.start_ms >= ctx.time_limit_ms {
+        ctx.stop = true;
+        return 0;
+    }
+    if pos.halfmove >= 100 {
+        return 0;
+    }
+    if history_count(ctx, hash) >= 3 {
+        return 0;
+    }
+
+    ctx.nodes += 1;
+
+    let tt_entry = {
+        if let Some(table) = tt.as_ref() {
+            table.probe(hash)
+        } else {
+            None
+        }
+    };
+    if let Some(entry) = tt_entry {
+        if entry.depth as u32 >= depth {
+            match entry.bound {
+                TT_BOUND_EXACT => return entry.value,
+                TT_BOUND_LOWER => {
+                    if entry.value >= beta {
+                        return entry.value;
+                    }
+                }
+                TT_BOUND_UPPER => {
+                    if entry.value <= alpha {
+                        return entry.value;
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    if depth == 0 {
+        return quiescence(pos, alpha, beta, ctx, tt, zob, hash, ply);
+    }
+
+    let mut moves = take_move_buf(ctx, ply);
+    generate_legal_moves_into(pos, &mut moves);
+    if moves.is_empty() {
+        restore_move_buf(ctx, ply, moves);
+        return if is_in_check(pos, pos.side_to_move) {
+            -MATE_SCORE + ply
+        } else {
+            0
+        };
+    }
+    let killers = if ply < 0 { None } else { ctx.killers.get(ply as usize) };
+    let history_heur = Some(&ctx.history_heur);
+    order_moves_in_place(pos, &mut moves, tt_entry, killers, history_heur, &mut ctx.order_scratch);
+
+    let orig_alpha = alpha;
+    let mut best = -INF_SCORE;
+    let mut best_move: Option<(Move, Option<char>)> = None;
+    for (mv, promo) in moves.iter().copied() {
+        if ctx.stop {
+            break;
+        }
+        let is_quiet = is_quiet_move(pos, mv, promo);
+        let Some(undo) = make_move_in_place(pos, mv, promo) else { continue; };
+        let next_hash = update_hash_after_move(hash, zob, &undo, pos, mv);
+        history_push(ctx, next_hash);
+        let score = -negamax(pos, depth - 1, -beta, -alpha, ctx, tt, zob, next_hash, ply + 1);
+        history_pop(ctx);
+        unmake_move_in_place(pos, mv, promo, undo);
+        if ctx.stop {
+            break;
+        }
+        if score > best {
+            best = score;
+            best_move = Some((mv, promo));
+        }
+        if score > alpha {
+            alpha = score;
+        }
+        if alpha >= beta {
+            if is_quiet {
+                let key = move_key(mv, promo);
+                update_killers(ctx, ply, key);
+                update_history_heur(ctx, pos.side_to_move, mv.from, mv.to, depth);
+            }
+            break;
+        }
+    }
+
+    if best == -INF_SCORE {
+        best = evaluate(pos);
+    }
+
+    if !ctx.stop {
+        let bound = if best <= orig_alpha {
+            TT_BOUND_UPPER
+        } else if best >= beta {
+            TT_BOUND_LOWER
+        } else {
+            TT_BOUND_EXACT
+        };
+        if let Some(table) = tt.as_mut() {
+            table.store(hash, depth, best, bound, best_move);
+        }
+    }
+
+    restore_move_buf(ctx, ply, moves);
+    best
+}
+
+fn search_depth(
+    pos: &mut Position,
+    depth: u32,
+    ctx: &mut SearchContext,
+    tt: &mut Option<TT>,
+    zob: &Zobrist,
+    hash: u64,
+) -> (i32, Option<(Move, Option<char>)>, bool) {
+    if pos.halfmove >= 100 {
+        return (0, None, false);
+    }
+    if depth == 0 {
+        let score = quiescence(pos, -INF_SCORE, INF_SCORE, ctx, tt, zob, hash, 0);
+        return (score, None, false);
+    }
+
+    let tt_entry = {
+        if let Some(table) = tt.as_ref() {
+            table.probe(hash)
+        } else {
+            None
+        }
+    };
+
+    let mut moves = take_move_buf(ctx, 0);
+    generate_legal_moves_into(pos, &mut moves);
+    if moves.is_empty() {
+        let score = if is_in_check(pos, pos.side_to_move) { -MATE_SCORE } else { 0 };
+        restore_move_buf(ctx, 0, moves);
+        return (score, None, false);
+    }
+    let killers = ctx.killers.get(0);
+    let history_heur = Some(&ctx.history_heur);
+    order_moves_in_place(pos, &mut moves, tt_entry, killers, history_heur, &mut ctx.order_scratch);
+
+    let mut alpha = -INF_SCORE;
+    let beta = INF_SCORE;
+    let mut best = None;
+    let orig_alpha = alpha;
+    let mut best_is_rep = false;
+    let mut best_non_rep_non_losing: Option<(Move, Option<char>)> = None;
+    let mut best_non_rep_non_losing_score = -INF_SCORE;
+    let mut rep_avoid_used = false;
+
+    for (mv, promo) in moves.iter().copied() {
+        if ctx.stop {
+            break;
+        }
+        if ctx.time_limit_ms > 0.0 && now_ms() - ctx.start_ms >= ctx.time_limit_ms {
+            ctx.stop = true;
+            break;
+        }
+        let Some(undo) = make_move_in_place(pos, mv, promo) else { continue; };
+        let next_hash = update_hash_after_move(hash, zob, &undo, pos, mv);
+        let rep_count = history_count(ctx, next_hash) as usize;
+        let is_rep_draw = rep_count >= 2;
+        history_push(ctx, next_hash);
+        let score = -negamax(pos, depth - 1, -beta, -alpha, ctx, tt, zob, next_hash, 1);
+        history_pop(ctx);
+        unmake_move_in_place(pos, mv, promo, undo);
+        if ctx.stop {
+            break;
+        }
+        if score > alpha {
+            alpha = score;
+            best = Some((mv, promo));
+            best_is_rep = is_rep_draw;
+        }
+        if !is_rep_draw && score >= 0 && score > best_non_rep_non_losing_score {
+            best_non_rep_non_losing_score = score;
+            best_non_rep_non_losing = Some((mv, promo));
+        }
+        if alpha >= beta {
+            break;
+        }
+    }
+
+    if !ctx.stop {
+        let bound = if alpha <= orig_alpha {
+            TT_BOUND_UPPER
+        } else if alpha >= beta {
+            TT_BOUND_LOWER
+        } else {
+            TT_BOUND_EXACT
+        };
+        if let Some(table) = tt.as_mut() {
+            table.store(hash, depth, alpha, bound, best);
+        }
+    }
+
+    let mut chosen_score = alpha;
+    let mut chosen_move = best;
+    if !ctx.stop && best_is_rep {
+        if let Some(mv) = best_non_rep_non_losing {
+            chosen_score = best_non_rep_non_losing_score;
+            chosen_move = Some(mv);
+            rep_avoid_used = true;
+        }
+    }
+
+    restore_move_buf(ctx, 0, moves);
+    (chosen_score, chosen_move, rep_avoid_used)
+}
+
+fn build_history(history: &str, zob: &Zobrist, root_hash: u64) -> Vec<u64> {
+    let mut out = Vec::new();
+    for line in history.lines() {
+        let fen = line.trim();
+        if fen.is_empty() {
+            continue;
+        }
+        if let Some(pos) = parse_fen(fen) {
+            out.push(compute_hash(&pos, zob));
+        }
+    }
+    if out.len() > 512 {
+        let start = out.len() - 512;
+        out = out.split_off(start);
+    }
+    out.push(root_hash);
+    out
+}
+
+fn search_impl(fen: &str, depth: u32, time_ms: u32, tt_mb: u32, history: &str) -> String {
+    let mut pos = match parse_fen(fen) {
+        Some(p) => p,
+        None => return "{\"error\":\"invalid fen\"}".to_string(),
+    };
+
+    let zob = Zobrist::new();
+    let mut tt = TT::new(tt_mb);
+    let root_hash = compute_hash(&pos, &zob);
+
+    let time_limit_ms = time_ms as f64;
+    let max_depth = if time_ms > 0 {
+        if depth > 0 { depth } else { 64 }
+    } else {
+        if depth > 0 { depth } else { 1 }
+    };
+
+    let start_ms = now_ms();
+    let history = build_history(history, &zob, root_hash);
+    let mut rep_counts: HashMap<u64, u8> = HashMap::new();
+    for h in history.iter() {
+        let entry = rep_counts.entry(*h).or_insert(0);
+        *entry = entry.saturating_add(1);
+    }
+    let max_ply = (max_depth as usize).saturating_add(8);
+    let killers = vec![[None; 2]; max_ply];
+    let history_heur = [[[0i32; 64]; 64]; 2];
+    let move_buf = Vec::with_capacity(max_ply);
+    let mut ctx = SearchContext {
+        nodes: 0,
+        start_ms,
+        time_limit_ms,
+        stop: false,
+        history,
+        rep_counts,
+        killers,
+        history_heur,
+        move_buf,
+        order_scratch: MoveOrderScratch::new(),
+    };
+
+    let mut best_move: Option<(Move, Option<char>)> = None;
+    let mut best_score = 0;
+    let mut completed_depth = 0;
+    let mut rep_avoid_used = false;
+
+    for d in 1..=max_depth {
+        let (score, mv, rep_avoid) = search_depth(&mut pos, d, &mut ctx, &mut tt, &zob, root_hash);
+        if ctx.stop {
+            break;
+        }
+        best_score = score;
+        best_move = mv;
+        completed_depth = d;
+        rep_avoid_used = rep_avoid;
+
+        if time_limit_ms > 0.0 && now_ms() - ctx.start_ms >= time_limit_ms {
+            break;
+        }
+    }
+
+    let elapsed_ms = (now_ms() - ctx.start_ms).max(0.0);
+    let nps = if elapsed_ms > 0.0 {
+        (ctx.nodes as f64 * 1000.0 / elapsed_ms) as u64
+    } else {
+        0
+    };
+
+    let best_str = best_move
+        .map(|(mv, promo)| move_to_uci(mv, promo))
+        .unwrap_or_else(|| "".to_string());
+    let pv_str = if best_str.is_empty() { "".to_string() } else { best_str.clone() };
+
+    format!(
+        "{{\"depth\":{},\"nodes\":{},\"time_ms\":{},\"nps\":{},\"score\":{},\"best\":\"{}\",\"pv\":\"{}\",\"rep_avoid\":{}}}",
+        completed_depth,
+        ctx.nodes,
+        elapsed_ms as u64,
+        nps,
+        best_score,
+        best_str,
+        pv_str,
+        rep_avoid_used
+    )
+}
+
+// WASM-Export: einfache Suche (Alpha-Beta, Material-Eval).
+// Rückgabe ist ein JSON-String für den Worker.
+#[wasm_bindgen]
+pub fn search(fen: &str, depth: u32, time_ms: u32, tt_mb: u32) -> String {
+    search_impl(fen, depth, time_ms, tt_mb, "")
+}
+
+// WASM-Export: Suche mit History für echte Repetition-Erkennung.
+#[wasm_bindgen]
+pub fn search_with_history(fen: &str, depth: u32, time_ms: u32, tt_mb: u32, history: &str) -> String {
+    search_impl(fen, depth, time_ms, tt_mb, history)
 }
 
 // ---------------------------
