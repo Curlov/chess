@@ -1,10 +1,137 @@
 // worker/moveWorker.js
-import init, { get_valid_moves, apply_move, search, search_with_history } from "../engine/pkg/chess_engine.js";
+import init, { get_valid_moves, apply_move, search, search_with_history, set_root_eval_debug } from "../engine/pkg/chess_engine.js";
 
 const wasmReady = init().catch((err) => {
     console.error("WASM init failed:", err);
     throw err;
 });
+
+const openingBookUrl = new URL("../engine/openingBook/opening_book_1000.json", import.meta.url);
+const openingBookReady = (async () => {
+    try {
+        const res = await fetch(openingBookUrl);
+        if (!res.ok) {
+            console.warn("Opening book load failed:", res.status, res.statusText);
+            return null;
+        }
+        const data = await res.json();
+        if (!data || typeof data !== "object") {
+            console.warn("Opening book invalid format");
+            return null;
+        }
+        return data;
+    } catch (err) {
+        console.warn("Opening book load error:", err);
+        return null;
+    }
+})();
+
+const bookState = {
+    active: true,
+    gameId: null,
+    lastHistory: ""
+};
+
+function normalizeHistory(history) {
+    return String(history || "").trim().replace(/\s+/g, " ");
+}
+
+function shouldResetBook(gameId, history) {
+    if (bookState.gameId !== gameId) return true;
+    if (history.length < bookState.lastHistory.length) return true;
+    if (bookState.lastHistory && !history.startsWith(bookState.lastHistory)) return true;
+    return false;
+}
+
+function lanToField(lan) {
+    if (!lan || lan.length !== 2) return null;
+    const file = lan.charCodeAt(0) - 97; // 'a'
+    const rank = lan.charCodeAt(1) - 49; // '1'
+    if (file < 0 || file > 7 || rank < 0 || rank > 7) return null;
+    return rank * 8 + file;
+}
+
+function parseUci(uci) {
+    if (typeof uci !== "string") return null;
+    const s = uci.trim();
+    if (s.length !== 4 && s.length !== 5) return null;
+    const from = lanToField(s.slice(0, 2));
+    const to = lanToField(s.slice(2, 4));
+    if (from === null || to === null) return null;
+    const promo = s.length === 5 ? s[4] : "";
+    return { from, to, promo };
+}
+
+function pickBookMove(moves) {
+    let bestMove = "";
+    let bestScore = Number.NEGATIVE_INFINITY;
+    for (const uci in moves) {
+        const raw = moves[uci];
+        const score = typeof raw === "number" ? raw : Number(raw);
+        if (!Number.isFinite(score)) continue;
+        if (score > bestScore) {
+            bestScore = score;
+            bestMove = uci;
+        }
+    }
+    return bestMove;
+}
+
+function pickLegalBookMove(fen, moves) {
+    const entries = [];
+    for (const uci in moves) {
+        const raw = moves[uci];
+        const score = typeof raw === "number" ? raw : Number(raw);
+        if (!Number.isFinite(score)) continue;
+        entries.push({ uci, score });
+    }
+    entries.sort((a, b) => b.score - a.score);
+
+    const cache = new Map();
+    for (const entry of entries) {
+        const parsed = parseUci(entry.uci);
+        if (!parsed) continue;
+        let targets = cache.get(parsed.from);
+        if (!targets) {
+            targets = new Set(Array.from(get_valid_moves(fen, parsed.from)));
+            cache.set(parsed.from, targets);
+        }
+        if (targets.has(parsed.to)) {
+            return entry.uci;
+        }
+    }
+    return "";
+}
+
+async function getBookMove(fen, historyUci, gameId, bookEnabled) {
+    if (!bookEnabled) return null;
+
+    const history = normalizeHistory(historyUci);
+    if (shouldResetBook(gameId, history)) {
+        bookState.active = true;
+        bookState.gameId = gameId;
+    }
+    bookState.lastHistory = history;
+
+    if (!bookState.active) return null;
+
+    const book = await openingBookReady;
+    if (!book) {
+        bookState.active = false;
+        return null;
+    }
+    const entry = book[history];
+    if (!entry || !entry.moves) {
+        bookState.active = false;
+        return null;
+    }
+    const bestMove = pickLegalBookMove(fen, entry.moves);
+    if (!bestMove) {
+        bookState.active = false;
+        return null;
+    }
+    return bestMove;
+}
 
 function collectMoves(fen) {
     const moves = [];
@@ -136,9 +263,37 @@ self.onmessage = async function (e) {
         const depth = Number(data.depth);
         const timeMs = Number(data.timeMs ?? data.time_ms ?? 0);
         const ttMb = Number(data.ttMb ?? data.tt_mb ?? 0);
+        const gameId = Number.isFinite(data.gameId) ? data.gameId : 0;
+        const bookEnabled = data.bookEnabled === true;
+        const uciHistory = typeof data.uciHistory === "string" ? data.uciHistory : "";
+        const debugRootEval = data.debugRootEval === true;
 
         if (!fen) {
             self.postMessage({ action: "search", error: "keine FEN vorhanden" });
+            return;
+        }
+
+        try {
+            if (typeof set_root_eval_debug === "function") {
+                set_root_eval_debug(debugRootEval);
+            }
+        } catch (err) {
+            console.warn("set_root_eval_debug failed:", err);
+        }
+
+        const bookMove = await getBookMove(fen, uciHistory, gameId, bookEnabled);
+        if (bookMove) {
+            self.postMessage({
+                action: "search",
+                depth: 0,
+                nodes: 0,
+                time_ms: 0,
+                nps: 0,
+                score: 0,
+                best: bookMove,
+                pv: bookMove,
+                book: true
+            });
             return;
         }
 

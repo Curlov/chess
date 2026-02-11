@@ -59,9 +59,9 @@ if (mediaUrls != null) {
             const mL1 = new MoveList();
             const c1 = new GameController(b1, mL1);
 
-            getPuzzleFen().then((x)=> c1.initPosition(x));
-//            const fen = getStartFen();
-//            c1.initPosition(fen);
+//            getPuzzleFen().then((x)=> c1.initPosition(x));
+            const fen = getStartFen();
+            c1.initPosition(fen);
 
 
             

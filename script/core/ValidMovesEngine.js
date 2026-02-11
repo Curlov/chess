@@ -136,10 +136,16 @@ export default class ValidMovesEngine {
         });
     }
 
-    search(fen, depth = 4, timeMs = 0, ttMb = 0, history = "") {
+    search(fen, depth = 4, timeMs = 0, ttMb = 0, history = "", bookMeta = null) {
         if (!this.worker) {
             return Promise.reject(new Error("Worker nicht initialisiert"));
         }
+
+        const meta = bookMeta || {};
+        const gameId = Number.isFinite(meta.gameId) ? meta.gameId : null;
+        const bookEnabled = meta.bookEnabled === true;
+        const uciHistory = typeof meta.uciHistory === "string" ? meta.uciHistory : "";
+        const debugRootEval = meta.debugRootEval === true;
 
         return this._enqueue("search", {
             action: "search",
@@ -147,7 +153,11 @@ export default class ValidMovesEngine {
             depth,
             timeMs,
             ttMb,
-            history
+            history,
+            gameId,
+            bookEnabled,
+            uciHistory,
+            debugRootEval
         });
     }
 

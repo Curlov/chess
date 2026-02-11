@@ -25,12 +25,15 @@ export default class GameController {
             this.handleMoveStart(field, figure, color, fromSelection);
         };
 
-         // Hier wird der Worker als „Behelfs-Engine“ instanziert
+        // Hier wird der Worker als „Behelfs-Engine“ instanziert
         this.engine = new ValidMovesEngine("../worker/moveWorker.js");
+
+        this.gameId = 0;
     }
 
     // FEN initialisieren und rendern
     initPosition(fen) {
+        this.gameId += 1;
         this.baseFen     = fen;
         this.currentFen  = fen;
         this.currentMeta = fenZuFigurenListe(fen);
@@ -114,6 +117,7 @@ export default class GameController {
             this.moveList?.addMove({
                 from,
                 to,
+                promotion,
                 fenBefore,
                 fenAfter
             });
@@ -177,7 +181,7 @@ export default class GameController {
     }
 
     async search(options = {}) {
-        const { depth = 4, timeMs = 0, ttMb = 128, fen = null } = options || {};
+        const { depth = 4, timeMs = 0, ttMb = 128, fen = null, debugRootEval = false } = options || {};
         const targetFen = fen ?? this.currentFen ?? this.baseFen;
         if (!targetFen) {
             console.warn("search: keine FEN vorhanden");
@@ -196,8 +200,11 @@ export default class GameController {
         const safeDepth = safeTimeMs > 0 ? 0 : (Number.isFinite(d) && d > 0 ? d : 0);
         const safeTtMb = Number.isFinite(m) && m > 0 ? m : 0;
 
+        const isCurrent = !fen || fen === this.currentFen;
         let history = "";
-        if (!fen || fen === this.currentFen) {
+        let uciHistory = "";
+        let bookEnabled = false;
+        if (isCurrent) {
             const historyList = [];
             if (this.baseFen) {
                 historyList.push(this.baseFen);
@@ -212,14 +219,74 @@ export default class GameController {
                 }
             }
             history = historyList.join("\n");
+
+            if (this.baseFen === getStartFen()) {
+                const expectedPly = this._getFenPlyCount(this.currentFen);
+                const moveCount = this.moveList && Number.isFinite(this.moveList.index)
+                    ? Math.max(0, this.moveList.index + 1)
+                    : 0;
+
+                if (Number.isFinite(expectedPly) && expectedPly === moveCount) {
+                    bookEnabled = true;
+                    uciHistory = this._buildUciHistory();
+                } else {
+                    bookEnabled = false;
+                    uciHistory = "";
+                }
+            }
         }
 
         try {
-            return await this.engine.search(targetFen, safeDepth, safeTimeMs, safeTtMb, history);
+            return await this.engine.search(
+                targetFen,
+                safeDepth,
+                safeTimeMs,
+                safeTtMb,
+                history,
+                { gameId: this.gameId, bookEnabled, uciHistory, debugRootEval: debugRootEval === true }
+            );
         } catch (err) {
             console.error("Fehler in search:", err);
             return null;
         }
+    }
+
+    _buildUciHistory() {
+        if (!this.moveList || !Array.isArray(this.moveList.moves)) {
+            return "";
+        }
+        const end = Math.min(this.moveList.index, this.moveList.moves.length - 1);
+        if (end < 0) return "";
+
+        const moves = [];
+        for (let i = 0; i <= end; i += 1) {
+            const entry = this.moveList.moves[i];
+            if (!entry) continue;
+            const fromIdx = Number(entry.from);
+            const toIdx = Number(entry.to);
+            if (!Number.isFinite(fromIdx) || !Number.isFinite(toIdx)) continue;
+            const from = fieldToLan(fromIdx);
+            const to = fieldToLan(toIdx);
+            let uci = String(from) + String(to);
+            if (entry.promotion && String(entry.promotion).length === 1) {
+                uci += String(entry.promotion).toLowerCase();
+            }
+            moves.push(uci);
+        }
+        return moves.join(" ");
+    }
+
+    _getFenPlyCount(fen) {
+        if (!fen || typeof fen !== "string") return null;
+        const parts = fen.trim().split(/\s+/);
+        if (parts.length < 2) return null;
+        const side = parts[1];
+        const fullmove = parts.length >= 6 ? Number(parts[5]) : NaN;
+        if (!Number.isFinite(fullmove) || fullmove < 1) return null;
+        const base = (fullmove - 1) * 2;
+        if (side === "b") return base + 1;
+        if (side === "w") return base;
+        return null;
     }
 
 }
