@@ -1,11 +1,16 @@
 use wasm_bindgen::prelude::*;
 use std::collections::HashMap;
 use std::mem::size_of;
+use std::cell::Cell;
 
 #[wasm_bindgen]
 extern "C" {
     #[wasm_bindgen(js_namespace = Date, js_name = now)]
     fn date_now() -> f64;
+}
+
+thread_local! {
+    static ROOT_EVAL_DEBUG: Cell<bool> = Cell::new(false);
 }
 
 #[inline]
@@ -32,6 +37,34 @@ fn lsb_idx(x: u64) -> usize {
 fn msb_idx(x: u64) -> usize {
     debug_assert!(x != 0);
     (63 - (x.leading_zeros() as u32)) as usize
+}
+
+#[inline]
+fn popcnt(x: u64) -> i32 {
+    x.count_ones() as i32
+}
+
+#[inline]
+fn pop_lsb(bb: &mut u64) -> u8 {
+    let lsb = *bb & bb.wrapping_neg();
+    let idx = lsb.trailing_zeros() as u8;
+    *bb ^= lsb;
+    idx
+}
+
+#[inline]
+fn mirror_sq(sq: u8) -> u8 {
+    sq ^ 56
+}
+
+#[inline]
+fn shift_east(bb: u64) -> u64 {
+    (bb << 1) & !FILE_A
+}
+
+#[inline]
+fn shift_west(bb: u64) -> u64 {
+    (bb >> 1) & !FILE_H
 }
 
 // ----------------------
@@ -330,12 +363,283 @@ const KNIGHT_ATTACKS: [u64; 64] = build_knight();
 const FILE_A: u64 = 0x0101_0101_0101_0101;
 const FILE_H: u64 = 0x8080_8080_8080_8080;
 
+const RANK_1: u64 = 0x0000_0000_0000_00FF;
+const RANK_2: u64 = 0x0000_0000_0000_FF00;
+const RANK_3: u64 = 0x0000_0000_00FF_0000;
+const RANK_4: u64 = 0x0000_0000_FF00_0000;
+const RANK_5: u64 = 0x0000_00FF_0000_0000;
+const RANK_6: u64 = 0x0000_FF00_0000_0000;
+const RANK_7: u64 = 0x00FF_0000_0000_0000;
+const RANK_8: u64 = 0xFF00_0000_0000_0000;
+
+const fn build_file_masks() -> [u64; 8] {
+    let mut a = [0u64; 8];
+    let mut f = 0;
+    while f < 8 {
+        a[f] = FILE_A << f;
+        f += 1;
+    }
+    a
+}
+
+const fn build_adj_file_masks() -> [u64; 8] {
+    let mut a = [0u64; 8];
+    let mut f = 0;
+    while f < 8 {
+        let mut mask = 0u64;
+        if f > 0 {
+            mask |= FILE_A << (f - 1);
+        }
+        if f < 7 {
+            mask |= FILE_A << (f + 1);
+        }
+        a[f] = mask;
+        f += 1;
+    }
+    a
+}
+
+const FILE_MASKS: [u64; 8] = build_file_masks();
+const ADJ_FILE_MASKS: [u64; 8] = build_adj_file_masks();
+
+const fn build_passed_masks_white() -> [u64; 64] {
+    let mut a = [0u64; 64];
+    let mut sq = 0;
+    while sq < 64 {
+        let file = (sq % 8) as i8;
+        let rank = (sq / 8) as i8;
+        let mut mask = 0u64;
+        let mut r = rank + 1;
+        while r <= 7 {
+            let mut f = file - 1;
+            while f <= file + 1 {
+                if f >= 0 && f <= 7 {
+                    let idx = (r as u8) * 8 + (f as u8);
+                    mask |= 1u64 << idx;
+                }
+                f += 1;
+            }
+            r += 1;
+        }
+        a[sq as usize] = mask;
+        sq += 1;
+    }
+    a
+}
+
+const fn build_passed_masks_black() -> [u64; 64] {
+    let mut a = [0u64; 64];
+    let mut sq = 0;
+    while sq < 64 {
+        let file = (sq % 8) as i8;
+        let rank = (sq / 8) as i8;
+        let mut mask = 0u64;
+        let mut r = rank - 1;
+        while r >= 0 {
+            let mut f = file - 1;
+            while f <= file + 1 {
+                if f >= 0 && f <= 7 {
+                    let idx = (r as u8) * 8 + (f as u8);
+                    mask |= 1u64 << idx;
+                }
+                f += 1;
+            }
+            r -= 1;
+        }
+        a[sq as usize] = mask;
+        sq += 1;
+    }
+    a
+}
+
+const PASSED_MASKS_WHITE: [u64; 64] = build_passed_masks_white();
+const PASSED_MASKS_BLACK: [u64; 64] = build_passed_masks_black();
+
+const fn build_king_zone() -> [u64; 64] {
+    let mut a = [0u64; 64];
+    let mut sq = 0;
+    while sq < 64 {
+        let mut zone = KING_ATTACKS[sq] | (1u64 << sq);
+        let ring = KING_ATTACKS[sq];
+        let mut i = 0;
+        while i < 64 {
+            if ((ring >> i) & 1) != 0 {
+                zone |= KING_ATTACKS[i];
+            }
+            i += 1;
+        }
+        a[sq] = zone;
+        sq += 1;
+    }
+    a
+}
+
+const KING_ZONE: [u64; 64] = build_king_zone();
+
 const CASTLE_WK: u8 = 1;
 const CASTLE_WQ: u8 = 2;
 const CASTLE_BK: u8 = 4;
 const CASTLE_BQ: u8 = 8;
 const MATE_SCORE: i32 = 30000;
 const INF_SCORE: i32 = 32000;
+const MAX_PHASE: i32 = 24;
+
+// ---------------------------
+// Eval: Material + PST (MG/EG)
+// ---------------------------
+const MG_VALUES: [i32; 6] = [100, 320, 330, 500, 900, 0];
+const EG_VALUES: [i32; 6] = [120, 300, 320, 510, 900, 0];
+const PHASE_VALUES: [i32; 6] = [0, 1, 1, 2, 4, 0];
+
+const MG_PST_PAWN: [i32; 64] = [
+     0,  0,  0,  0,  0,  0,  0,  0,
+     5, 10, 10,-10,-10, 10, 10,  5,
+     5,  5, 10, 15, 15, 10,  5,  5,
+     0,  0, 10, 20, 20, 10,  0,  0,
+     5,  5, 10, 25, 25, 10,  5,  5,
+    10, 10, 20, 30, 30, 20, 10, 10,
+    50, 50, 50, 50, 50, 50, 50, 50,
+     0,  0,  0,  0,  0,  0,  0,  0,
+];
+
+const EG_PST_PAWN: [i32; 64] = [
+     0,  0,  0,  0,  0,  0,  0,  0,
+     0,  0,  0,  0,  0,  0,  0,  0,
+     5,  5,  5,  5,  5,  5,  5,  5,
+    10, 10, 10, 10, 10, 10, 10, 10,
+    20, 20, 20, 20, 20, 20, 20, 20,
+    40, 40, 40, 40, 40, 40, 40, 40,
+    70, 70, 70, 70, 70, 70, 70, 70,
+     0,  0,  0,  0,  0,  0,  0,  0,
+];
+
+const MG_PST_KNIGHT: [i32; 64] = [
+   -50,-40,-30,-30,-30,-30,-40,-50,
+   -40,-20,  0,  0,  0,  0,-20,-40,
+   -30,  0, 10, 15, 15, 10,  0,-30,
+   -30,  5, 15, 20, 20, 15,  5,-30,
+   -30,  0, 15, 20, 20, 15,  0,-30,
+   -30,  5, 10, 15, 15, 10,  5,-30,
+   -40,-20,  0,  5,  5,  0,-20,-40,
+   -50,-40,-30,-30,-30,-30,-40,-50,
+];
+
+const EG_PST_KNIGHT: [i32; 64] = [
+   -40,-30,-20,-20,-20,-20,-30,-40,
+   -30,-10,  0,  0,  0,  0,-10,-30,
+   -20,  0, 10, 10, 10, 10,  0,-20,
+   -20,  5, 10, 15, 15, 10,  5,-20,
+   -20,  0, 10, 15, 15, 10,  0,-20,
+   -20,  5, 10, 10, 10, 10,  5,-20,
+   -30,-10,  0,  5,  5,  0,-10,-30,
+   -40,-30,-20,-20,-20,-20,-30,-40,
+];
+
+const MG_PST_BISHOP: [i32; 64] = [
+   -20,-10,-10,-10,-10,-10,-10,-20,
+   -10,  0,  0,  0,  0,  0,  0,-10,
+   -10,  0,  5, 10, 10,  5,  0,-10,
+   -10,  5,  5, 10, 10,  5,  5,-10,
+   -10,  0, 10, 10, 10, 10,  0,-10,
+   -10, 10, 10, 10, 10, 10, 10,-10,
+   -10,  5,  0,  0,  0,  0,  5,-10,
+   -20,-10,-10,-10,-10,-10,-10,-20,
+];
+
+const EG_PST_BISHOP: [i32; 64] = [
+   -10, -5, -5, -5, -5, -5, -5,-10,
+    -5,  5,  0,  0,  0,  0,  5, -5,
+    -5,  0, 10, 10, 10, 10,  0, -5,
+    -5,  5, 10, 15, 15, 10,  5, -5,
+    -5,  0, 10, 15, 15, 10,  0, -5,
+    -5,  5, 10, 10, 10, 10,  5, -5,
+    -5,  5,  0,  0,  0,  0,  5, -5,
+   -10, -5, -5, -5, -5, -5, -5,-10,
+];
+
+const MG_PST_ROOK: [i32; 64] = [
+     0,  0,  5, 10, 10,  5,  0,  0,
+    -5,  0,  0,  0,  0,  0,  0, -5,
+    -5,  0,  0,  0,  0,  0,  0, -5,
+    -5,  0,  0,  0,  0,  0,  0, -5,
+    -5,  0,  0,  0,  0,  0,  0, -5,
+    -5,  0,  0,  0,  0,  0,  0, -5,
+     5, 10, 10, 10, 10, 10, 10,  5,
+     0,  0,  0,  0,  0,  0,  0,  0,
+];
+
+const EG_PST_ROOK: [i32; 64] = [
+     0,  0,  5, 10, 10,  5,  0,  0,
+     5, 10, 10, 10, 10, 10, 10,  5,
+     0,  0,  5,  5,  5,  5,  0,  0,
+     0,  0,  5,  5,  5,  5,  0,  0,
+     0,  0,  5,  5,  5,  5,  0,  0,
+     0,  0,  5,  5,  5,  5,  0,  0,
+     0,  0,  5, 10, 10,  5,  0,  0,
+     0,  0,  0,  0,  0,  0,  0,  0,
+];
+
+const MG_PST_QUEEN: [i32; 64] = [
+   -20,-10,-10, -5, -5,-10,-10,-20,
+   -10,  0,  0,  0,  0,  0,  0,-10,
+   -10,  0,  5,  5,  5,  5,  0,-10,
+    -5,  0,  5,  5,  5,  5,  0, -5,
+     0,  0,  5,  5,  5,  5,  0, -5,
+   -10,  5,  5,  5,  5,  5,  0,-10,
+   -10,  0,  5,  0,  0,  0,  0,-10,
+   -20,-10,-10, -5, -5,-10,-10,-20,
+];
+
+const EG_PST_QUEEN: [i32; 64] = [
+   -10, -5, -5, -5, -5, -5, -5,-10,
+    -5,  0,  0,  0,  0,  0,  0, -5,
+    -5,  0,  5,  5,  5,  5,  0, -5,
+    -5,  0,  5,  5,  5,  5,  0, -5,
+    -5,  0,  5,  5,  5,  5,  0, -5,
+    -5,  0,  5,  5,  5,  5,  0, -5,
+    -5,  0,  0,  0,  0,  0,  0, -5,
+   -10, -5, -5, -5, -5, -5, -5,-10,
+];
+
+const MG_PST_KING: [i32; 64] = [
+   -30,-40,-40,-50,-50,-40,-40,-30,
+   -30,-40,-40,-50,-50,-40,-40,-30,
+   -40,-50,-50,-60,-60,-50,-50,-40,
+   -50,-60,-60,-70,-70,-60,-60,-50,
+   -50,-60,-60,-70,-70,-60,-60,-50,
+   -40,-50,-50,-60,-60,-50,-50,-40,
+   -30,-40,-40,-50,-50,-40,-40,-30,
+   -30,-40,-40,-50,-50,-40,-40,-30,
+];
+
+const EG_PST_KING: [i32; 64] = [
+   -10, -5,  0,  5,  5,  0, -5,-10,
+    -5,  5, 10, 15, 15, 10,  5, -5,
+     0, 10, 20, 25, 25, 20, 10,  0,
+     5, 15, 25, 30, 30, 25, 15,  5,
+     5, 15, 25, 30, 30, 25, 15,  5,
+     0, 10, 20, 25, 25, 20, 10,  0,
+    -5,  5, 10, 15, 15, 10,  5, -5,
+   -10, -5,  0,  5,  5,  0, -5,-10,
+];
+
+const MG_PST: [[i32; 64]; 6] = [
+    MG_PST_PAWN,
+    MG_PST_KNIGHT,
+    MG_PST_BISHOP,
+    MG_PST_ROOK,
+    MG_PST_QUEEN,
+    MG_PST_KING,
+];
+
+const EG_PST: [[i32; 64]; 6] = [
+    EG_PST_PAWN,
+    EG_PST_KNIGHT,
+    EG_PST_BISHOP,
+    EG_PST_ROOK,
+    EG_PST_QUEEN,
+    EG_PST_KING,
+];
 
 // ---------------------------
 // Grundtypen
@@ -871,18 +1175,18 @@ fn gen_pawn_moves(pos: &Position, from: u8, color: Color, moves: &mut Vec<Move>)
     }
 }
 
-// Erzeugt alle Pseudozüge einer Figur auf `from`.
+// Erzeugt alle Pseudozüge einer Figur auf `from` in `out`.
 // Filtert auf „side to move“ und ergänzt Rochade beim König.
 // Legalitätsprüfung erfolgt separat.
-fn generate_moves_for_piece(pos: &Position, from: u8) -> Vec<Move> {
-    let mut moves = Vec::new();
+fn generate_moves_for_piece_into(pos: &Position, from: u8, out: &mut Vec<Move>) {
+    out.clear();
     let idx = from as usize;
-    let Some(piece) = pos.board[idx] else { return moves; };
+    let Some(piece) = pos.board[idx] else { return; };
     let color = piece_color(piece);
 
     // Nur Züge der Seite am Zug
     if color != pos.side_to_move {
-        return moves;
+        return;
     }
 
     let own_occ = match color {
@@ -892,41 +1196,39 @@ fn generate_moves_for_piece(pos: &Position, from: u8) -> Vec<Move> {
 
     match piece.to_ascii_lowercase() {
         'p' => {
-            gen_pawn_moves(pos, from, color, &mut moves);
+            gen_pawn_moves(pos, from, color, out);
         }
         'n' => {
             let attacks = KNIGHT_ATTACKS[idx] & !own_occ;
-            push_moves_from_bb(&mut moves, from, attacks);
+            push_moves_from_bb(out, from, attacks);
         }
         'b' => {
             let attacks = bishop_attacks(from, pos.bb.occ) & !own_occ;
-            push_moves_from_bb(&mut moves, from, attacks);
+            push_moves_from_bb(out, from, attacks);
         }
         'r' => {
             let attacks = rook_attacks(from, pos.bb.occ) & !own_occ;
-            push_moves_from_bb(&mut moves, from, attacks);
+            push_moves_from_bb(out, from, attacks);
         }
         'q' => {
             let attacks = queen_attacks(from, pos.bb.occ) & !own_occ;
-            push_moves_from_bb(&mut moves, from, attacks);
+            push_moves_from_bb(out, from, attacks);
         }
         'k' => {
             let attacks = KING_ATTACKS[idx] & !own_occ;
-            push_moves_from_bb(&mut moves, from, attacks);
+            push_moves_from_bb(out, from, attacks);
 
             if can_castle_kingside(pos, color, from) {
                 let to = if color == Color::White { 6 } else { 62 };
-                moves.push(Move { from, to, kind: MoveKind::Castle });
+                out.push(Move { from, to, kind: MoveKind::Castle });
             }
             if can_castle_queenside(pos, color, from) {
                 let to = if color == Color::White { 2 } else { 58 };
-                moves.push(Move { from, to, kind: MoveKind::Castle });
+                out.push(Move { from, to, kind: MoveKind::Castle });
             }
         }
         _ => {}
     }
-
-    moves
 }
 
 // Wendet einen Zug direkt auf das Board an.
@@ -1002,7 +1304,8 @@ fn is_move_legal(pos: &mut Position, mv: Move, color: Color) -> bool {
 // Findet einen legalen Zug von `from` nach `to` (inkl. Sonderzugtyp).
 // Wird für `apply_move` genutzt, damit nur gültige Züge übernommen werden.
 fn find_legal_move(pos: &mut Position, from: u8, to: u8) -> Option<Move> {
-    let moves = generate_moves_for_piece(pos, from);
+    let mut moves: Vec<Move> = Vec::with_capacity(32);
+    generate_moves_for_piece_into(pos, from, &mut moves);
     for mv in moves {
         if mv.to == to && is_move_legal(pos, mv, pos.side_to_move) {
             return Some(mv);
@@ -1014,6 +1317,11 @@ fn find_legal_move(pos: &mut Position, from: u8, to: u8) -> Option<Move> {
 // ---------------------------
 // WASM Exports
 // ---------------------------
+#[wasm_bindgen]
+pub fn set_root_eval_debug(flag: bool) {
+    ROOT_EVAL_DEBUG.with(|v| v.set(flag));
+}
+
 // WASM-Export: liefert alle legalen Ziel-Felder für die Figur auf `field`.
 // Berücksichtigt Schach, Rochade und En-passant.
 // Gibt eine Liste von Feldindizes (0..63) zurück.
@@ -1039,7 +1347,8 @@ pub fn get_valid_moves(fen: &str, field: u8) -> Vec<u8> {
         return Vec::new();
     }
 
-    let moves = generate_moves_for_piece(&pos, field);
+    let mut moves: Vec<Move> = Vec::with_capacity(32);
+    generate_moves_for_piece_into(&pos, field, &mut moves);
     let mut legal = Vec::new();
     for mv in moves {
         if is_move_legal(&mut pos, mv, color) {
@@ -1182,30 +1491,318 @@ fn piece_value(piece: char) -> i32 {
     }
 }
 
-fn evaluate(pos: &Position) -> i32 {
-    let mut score = 0;
-    for sq in 0..64 {
-        if let Some(p) = pos.board[sq] {
-            let v = piece_value(p);
-            if p.is_ascii_uppercase() {
-                score += v;
-            } else {
-                score -= v;
+fn blend(mg: i32, eg: i32, phase: i32) -> i32 {
+    (mg * phase + eg * (MAX_PHASE - phase)) / MAX_PHASE
+}
+
+fn compute_phase(pos: &Position) -> i32 {
+    let mut phase = 0;
+    phase += popcnt(pos.bb.wn) * PHASE_VALUES[1];
+    phase += popcnt(pos.bb.bn) * PHASE_VALUES[1];
+    phase += popcnt(pos.bb.wb) * PHASE_VALUES[2];
+    phase += popcnt(pos.bb.bb) * PHASE_VALUES[2];
+    phase += popcnt(pos.bb.wr) * PHASE_VALUES[3];
+    phase += popcnt(pos.bb.br) * PHASE_VALUES[3];
+    phase += popcnt(pos.bb.wq) * PHASE_VALUES[4];
+    phase += popcnt(pos.bb.bq) * PHASE_VALUES[4];
+    if phase > MAX_PHASE { MAX_PHASE } else { phase }
+}
+
+fn add_piece_scores(
+    material_mg: &mut i32,
+    material_eg: &mut i32,
+    pst_mg: &mut i32,
+    pst_eg: &mut i32,
+    mut bb: u64,
+    piece_idx: usize,
+    is_white: bool,
+) {
+    let sign = if is_white { 1 } else { -1 };
+    while bb != 0 {
+        let sq = pop_lsb(&mut bb);
+        let psq = if is_white { sq } else { mirror_sq(sq) };
+        *material_mg += sign * MG_VALUES[piece_idx];
+        *material_eg += sign * EG_VALUES[piece_idx];
+        *pst_mg += sign * MG_PST[piece_idx][psq as usize];
+        *pst_eg += sign * EG_PST[piece_idx][psq as usize];
+    }
+}
+
+const DOUBLED_PAWN_MG: i32 = -12;
+const DOUBLED_PAWN_EG: i32 = -8;
+const ISOLATED_PAWN_MG: i32 = -15;
+const ISOLATED_PAWN_EG: i32 = -10;
+const CONNECTED_PASSED_MG: i32 = 8;
+const CONNECTED_PASSED_EG: i32 = 15;
+const SPACE_PAWN_MG: i32 = 5;
+
+const PASSED_BONUS_MG: [i32; 8] = [0, 5, 10, 20, 30, 40, 60, 0];
+const PASSED_BONUS_EG: [i32; 8] = [0, 10, 20, 40, 60, 80, 120, 0];
+
+fn pawn_features(pos: &Position, color: Color) -> (i32, i32) {
+    let pawns = if color == Color::White { pos.bb.wp } else { pos.bb.bp };
+    let enemy_pawns = if color == Color::White { pos.bb.bp } else { pos.bb.wp };
+
+    let mut mg = 0;
+    let mut eg = 0;
+
+    // Doubled / isolated
+    for file in 0..8 {
+        let file_mask = FILE_MASKS[file];
+        let pawns_on_file = pawns & file_mask;
+        let count = popcnt(pawns_on_file);
+        if count > 1 {
+            let extra = count - 1;
+            mg += extra * DOUBLED_PAWN_MG;
+            eg += extra * DOUBLED_PAWN_EG;
+        }
+        if pawns_on_file != 0 {
+            let adj = pawns & ADJ_FILE_MASKS[file];
+            if adj == 0 {
+                mg += count * ISOLATED_PAWN_MG;
+                eg += count * ISOLATED_PAWN_EG;
             }
         }
     }
-    if pos.side_to_move == Color::Black {
-        -score
-    } else {
-        score
+
+    // Passed pawns + connected passed
+    let mut passed = 0u64;
+    let mut pawns_bb = pawns;
+    while pawns_bb != 0 {
+        let sq = pop_lsb(&mut pawns_bb);
+        let mask = if color == Color::White {
+            PASSED_MASKS_WHITE[sq as usize]
+        } else {
+            PASSED_MASKS_BLACK[sq as usize]
+        };
+        if (enemy_pawns & mask) == 0 {
+            passed |= bb(sq);
+            let rank = (sq / 8) as i32;
+            let r = if color == Color::White { rank } else { 7 - rank };
+            let idx = r.max(0).min(7) as usize;
+            mg += PASSED_BONUS_MG[idx];
+            eg += PASSED_BONUS_EG[idx];
+        }
     }
+
+    let connected = passed & (shift_east(passed) | shift_west(passed));
+    let connected_count = popcnt(connected);
+    mg += connected_count * CONNECTED_PASSED_MG;
+    eg += connected_count * CONNECTED_PASSED_EG;
+
+    // Space bonus (small, MG only)
+    let space_mask = if color == Color::White { RANK_5 | RANK_6 } else { RANK_4 | RANK_3 };
+    let space_count = popcnt(pawns & space_mask);
+    mg += space_count * SPACE_PAWN_MG;
+
+    (mg, eg)
+}
+
+fn pawn_structure_score(pos: &Position) -> (i32, i32) {
+    let (w_mg, w_eg) = pawn_features(pos, Color::White);
+    let (b_mg, b_eg) = pawn_features(pos, Color::Black);
+    (w_mg - b_mg, w_eg - b_eg)
+}
+
+const KING_PRESSURE_MG: i32 = 8;
+const KING_PRESSURE_EG: i32 = 3;
+const PAWN_SHIELD_MG: i32 = 12;
+const PAWN_SHIELD_EG: i32 = 4;
+const PAWN_FILE_HALF_OPEN_MG: i32 = 6;
+const PAWN_FILE_OPEN_MG: i32 = 10;
+
+fn attacks_for_color(pos: &Position, color: Color) -> u64 {
+    let occ = pos.bb.occ;
+    let (pawns, knights, bishops, rooks, queens, king_sq) = match color {
+        Color::White => (pos.bb.wp, pos.bb.wn, pos.bb.wb, pos.bb.wr, pos.bb.wq, pos.bb.white_king_sq),
+        Color::Black => (pos.bb.bp, pos.bb.bn, pos.bb.bb, pos.bb.br, pos.bb.bq, pos.bb.black_king_sq),
+    };
+
+    let pawn_attacks = match color {
+        Color::White => ((pawns & !FILE_H) << 9) | ((pawns & !FILE_A) << 7),
+        Color::Black => ((pawns & !FILE_A) >> 9) | ((pawns & !FILE_H) >> 7),
+    };
+
+    let mut attacks = pawn_attacks | KING_ATTACKS[king_sq as usize];
+
+    let mut bb = knights;
+    while bb != 0 {
+        let sq = pop_lsb(&mut bb) as usize;
+        attacks |= KNIGHT_ATTACKS[sq];
+    }
+
+    let mut bb = bishops;
+    while bb != 0 {
+        let sq = pop_lsb(&mut bb);
+        attacks |= bishop_attacks(sq, occ);
+    }
+
+    let mut bb = rooks;
+    while bb != 0 {
+        let sq = pop_lsb(&mut bb);
+        attacks |= rook_attacks(sq, occ);
+    }
+
+    let mut bb = queens;
+    while bb != 0 {
+        let sq = pop_lsb(&mut bb);
+        attacks |= queen_attacks(sq, occ);
+    }
+
+    attacks
+}
+
+fn king_safety_for(pos: &Position, color: Color) -> (i32, i32) {
+    let king_sq = if color == Color::White { pos.bb.white_king_sq } else { pos.bb.black_king_sq };
+    let enemy_attacks = attacks_for_color(pos, color.opposite());
+    let pressure = popcnt(enemy_attacks & KING_ZONE[king_sq as usize]);
+    let mut mg = -pressure * KING_PRESSURE_MG;
+    let mut eg = -pressure * KING_PRESSURE_EG;
+
+    // Pawn shield
+    let pawns = if color == Color::White { pos.bb.wp } else { pos.bb.bp };
+    let enemy_pawns = if color == Color::White { pos.bb.bp } else { pos.bb.wp };
+    let file = (king_sq % 8) as usize;
+    let shield_files = FILE_MASKS[file] | ADJ_FILE_MASKS[file];
+    let shield_ranks = if color == Color::White { RANK_2 | RANK_3 } else { RANK_7 | RANK_6 };
+    let shield_mask = shield_files & shield_ranks;
+    let expected = if file == 0 || file == 7 { 2 } else { 3 };
+    let shield_count = popcnt(pawns & shield_mask);
+    let missing = expected - shield_count;
+    if missing > 0 {
+        mg -= missing * PAWN_SHIELD_MG;
+        eg -= missing * PAWN_SHIELD_EG;
+    }
+
+    // Open / half-open files near king
+    for df in [-1i32, 0, 1] {
+        let f = file as i32 + df;
+        if f < 0 || f > 7 {
+            continue;
+        }
+        let fmask = FILE_MASKS[f as usize];
+        if (pawns & fmask) == 0 {
+            if (enemy_pawns & fmask) == 0 {
+                mg -= PAWN_FILE_OPEN_MG;
+            } else {
+                mg -= PAWN_FILE_HALF_OPEN_MG;
+            }
+        }
+    }
+
+    (mg, eg)
+}
+
+fn king_safety_score(pos: &Position) -> (i32, i32) {
+    let (w_mg, w_eg) = king_safety_for(pos, Color::White);
+    let (b_mg, b_eg) = king_safety_for(pos, Color::Black);
+    (w_mg - b_mg, w_eg - b_eg)
+}
+
+#[derive(Copy, Clone)]
+struct EvalBreakdown {
+    material: i32,
+    pst: i32,
+    pawn: i32,
+    king: i32,
+    misc: i32,
+    total: i32,
+}
+
+fn negate_breakdown(bd: EvalBreakdown) -> EvalBreakdown {
+    EvalBreakdown {
+        material: -bd.material,
+        pst: -bd.pst,
+        pawn: -bd.pawn,
+        king: -bd.king,
+        misc: -bd.misc,
+        total: -bd.total,
+    }
+}
+
+fn evaluate_breakdown(pos: &Position) -> EvalBreakdown {
+    let mut material_mg = 0;
+    let mut material_eg = 0;
+    let mut pst_mg = 0;
+    let mut pst_eg = 0;
+
+    add_piece_scores(&mut material_mg, &mut material_eg, &mut pst_mg, &mut pst_eg, pos.bb.wp, 0, true);
+    add_piece_scores(&mut material_mg, &mut material_eg, &mut pst_mg, &mut pst_eg, pos.bb.wn, 1, true);
+    add_piece_scores(&mut material_mg, &mut material_eg, &mut pst_mg, &mut pst_eg, pos.bb.wb, 2, true);
+    add_piece_scores(&mut material_mg, &mut material_eg, &mut pst_mg, &mut pst_eg, pos.bb.wr, 3, true);
+    add_piece_scores(&mut material_mg, &mut material_eg, &mut pst_mg, &mut pst_eg, pos.bb.wq, 4, true);
+    add_piece_scores(&mut material_mg, &mut material_eg, &mut pst_mg, &mut pst_eg, pos.bb.wk, 5, true);
+
+    add_piece_scores(&mut material_mg, &mut material_eg, &mut pst_mg, &mut pst_eg, pos.bb.bp, 0, false);
+    add_piece_scores(&mut material_mg, &mut material_eg, &mut pst_mg, &mut pst_eg, pos.bb.bn, 1, false);
+    add_piece_scores(&mut material_mg, &mut material_eg, &mut pst_mg, &mut pst_eg, pos.bb.bb, 2, false);
+    add_piece_scores(&mut material_mg, &mut material_eg, &mut pst_mg, &mut pst_eg, pos.bb.br, 3, false);
+    add_piece_scores(&mut material_mg, &mut material_eg, &mut pst_mg, &mut pst_eg, pos.bb.bq, 4, false);
+    add_piece_scores(&mut material_mg, &mut material_eg, &mut pst_mg, &mut pst_eg, pos.bb.bk, 5, false);
+
+    let (pawn_mg, pawn_eg) = pawn_structure_score(pos);
+    let (king_mg, king_eg) = king_safety_score(pos);
+
+    let phase = compute_phase(pos);
+    let material = blend(material_mg, material_eg, phase);
+    let pst = blend(pst_mg, pst_eg, phase);
+    let pawn = blend(pawn_mg, pawn_eg, phase);
+    let king = blend(king_mg, king_eg, phase);
+    let misc = 0;
+
+    let mut total = material + pst + pawn + king + misc;
+    let sign = if pos.side_to_move == Color::White { 1 } else { -1 };
+    total *= sign;
+
+    EvalBreakdown {
+        material: material * sign,
+        pst: pst * sign,
+        pawn: pawn * sign,
+        king: king * sign,
+        misc: misc * sign,
+        total,
+    }
+}
+
+fn evaluate(pos: &Position) -> i32 {
+    evaluate_breakdown(pos).total
+}
+
+fn root_eval_breakdown_json(pos: &mut Position) -> String {
+    let mut moves = Vec::new();
+    generate_legal_moves_into(pos, &mut moves);
+
+    let mut out = String::new();
+    out.push('[');
+    let mut first = true;
+
+    for (mv, promo) in moves.iter().copied() {
+        let Some(undo) = make_move_in_place(pos, mv, promo) else { continue; };
+        let bd = negate_breakdown(evaluate_breakdown(pos));
+        unmake_move_in_place(pos, mv, promo, undo);
+
+        if !first {
+            out.push(',');
+        }
+        first = false;
+
+        let uci = move_to_uci(mv, promo);
+        out.push_str(&format!(
+            "{{\"move\":\"{}\",\"total\":{},\"material\":{},\"pst\":{},\"pawn\":{},\"king\":{},\"misc\":{}}}",
+            uci, bd.total, bd.material, bd.pst, bd.pawn, bd.king, bd.misc
+        ));
+    }
+
+    out.push(']');
+    out
 }
 
 fn generate_legal_moves_into(pos: &mut Position, out: &mut Vec<(Move, Option<char>)>) {
     out.clear();
+    let mut piece_moves: Vec<Move> = Vec::with_capacity(32);
     for from in 0u8..64u8 {
-        let moves = generate_moves_for_piece(pos, from);
-        for mv in moves {
+        generate_moves_for_piece_into(pos, from, &mut piece_moves);
+        for mv in piece_moves.iter().copied() {
             if is_move_legal(pos, mv, pos.side_to_move) {
                 if let MoveKind::Promotion = mv.kind {
                     for promo in ['q', 'r', 'b', 'n'] {
@@ -1717,12 +2314,15 @@ fn capture_score(pos: &Position, mv: Move, promo: Option<char>) -> i32 {
 fn order_moves_in_place(
     pos: &Position,
     moves: &mut Vec<(Move, Option<char>)>,
+    pv_move: Option<(u8, u8, Option<char>)>,
     tt_entry: Option<TTEntry>,
     killers: Option<&[Option<(u8, u8, u8)>; 2]>,
     history_heur: Option<&[[[i32; 64]; 64]; 2]>,
     scratch: &mut MoveOrderScratch,
 ) {
+    let pv_best = pv_move;
     let tt_best = tt_entry.and_then(entry_best_move);
+    let mut pv_chosen: Option<(Move, Option<char>)> = None;
     let mut tt_move: Option<(Move, Option<char>)> = None;
     let mut killer_moves: [Option<(Move, Option<char>)>; 2] = [None, None];
     scratch.captures.clear();
@@ -1730,6 +2330,12 @@ fn order_moves_in_place(
     scratch.rest.clear();
 
     for (mv, promo) in moves.drain(..) {
+        if let Some((bf, bt, bp)) = pv_best {
+            if mv.from == bf && mv.to == bt && promo == bp {
+                pv_chosen = Some((mv, promo));
+                continue;
+            }
+        }
         if let Some((bf, bt, bp)) = tt_best {
             if mv.from == bf && mv.to == bt && promo == bp {
                 tt_move = Some((mv, promo));
@@ -1779,6 +2385,9 @@ fn order_moves_in_place(
     }
 
     moves.clear();
+    if let Some(mv) = pv_chosen {
+        moves.push(mv);
+    }
     if let Some(mv) = tt_move {
         moves.push(mv);
     }
@@ -1799,9 +2408,10 @@ fn order_moves_in_place(
 
 fn generate_tactical_moves_into(pos: &mut Position, out: &mut Vec<(Move, Option<char>)>) {
     out.clear();
+    let mut piece_moves: Vec<Move> = Vec::with_capacity(32);
     for from in 0u8..64u8 {
-        let moves = generate_moves_for_piece(pos, from);
-        for mv in moves {
+        generate_moves_for_piece_into(pos, from, &mut piece_moves);
+        for mv in piece_moves.iter().copied() {
             if !is_move_legal(pos, mv, pos.side_to_move) {
                 continue;
             }
@@ -2140,7 +2750,7 @@ fn quiescence(
         return stand_pat;
     }
 
-    order_moves_in_place(pos, &mut moves, None, None, None, &mut ctx.order_scratch);
+    order_moves_in_place(pos, &mut moves, None, None, None, None, &mut ctx.order_scratch);
     for (mv, promo) in moves.iter().copied() {
         if ctx.stop {
             break;
@@ -2236,11 +2846,12 @@ fn negamax(
     }
     let killers = if ply < 0 { None } else { ctx.killers.get(ply as usize) };
     let history_heur = Some(&ctx.history_heur);
-    order_moves_in_place(pos, &mut moves, tt_entry, killers, history_heur, &mut ctx.order_scratch);
+    order_moves_in_place(pos, &mut moves, None, tt_entry, killers, history_heur, &mut ctx.order_scratch);
 
     let orig_alpha = alpha;
     let mut best = -INF_SCORE;
     let mut best_move: Option<(Move, Option<char>)> = None;
+    let mut first = true;
     for (mv, promo) in moves.iter().copied() {
         if ctx.stop {
             break;
@@ -2249,9 +2860,19 @@ fn negamax(
         let Some(undo) = make_move_in_place(pos, mv, promo) else { continue; };
         let next_hash = update_hash_after_move(hash, zob, &undo, pos, mv);
         history_push(ctx, next_hash);
-        let score = -negamax(pos, depth - 1, -beta, -alpha, ctx, tt, zob, next_hash, ply + 1);
+        let score = if first {
+            -negamax(pos, depth - 1, -beta, -alpha, ctx, tt, zob, next_hash, ply + 1)
+        } else {
+            let narrow = alpha.saturating_add(1);
+            let mut sc = -negamax(pos, depth - 1, -narrow, -alpha, ctx, tt, zob, next_hash, ply + 1);
+            if sc > alpha && sc < beta {
+                sc = -negamax(pos, depth - 1, -beta, -alpha, ctx, tt, zob, next_hash, ply + 1);
+            }
+            sc
+        };
         history_pop(ctx);
         unmake_move_in_place(pos, mv, promo, undo);
+        first = false;
         if ctx.stop {
             break;
         }
@@ -2300,6 +2921,9 @@ fn search_depth(
     tt: &mut Option<TT>,
     zob: &Zobrist,
     hash: u64,
+    alpha: i32,
+    beta: i32,
+    pv_move: Option<(u8, u8, Option<char>)>,
 ) -> (i32, Option<(Move, Option<char>)>, bool) {
     if pos.halfmove >= 100 {
         return (0, None, false);
@@ -2326,17 +2950,19 @@ fn search_depth(
     }
     let killers = ctx.killers.get(0);
     let history_heur = Some(&ctx.history_heur);
-    order_moves_in_place(pos, &mut moves, tt_entry, killers, history_heur, &mut ctx.order_scratch);
+    order_moves_in_place(pos, &mut moves, pv_move, tt_entry, killers, history_heur, &mut ctx.order_scratch);
 
-    let mut alpha = -INF_SCORE;
-    let beta = INF_SCORE;
-    let mut best = None;
+    let mut alpha = alpha;
+    let beta = beta;
     let orig_alpha = alpha;
+    let mut best = None;
+    let mut best_score = -INF_SCORE;
     let mut best_is_rep = false;
     let mut best_non_rep_non_losing: Option<(Move, Option<char>)> = None;
     let mut best_non_rep_non_losing_score = -INF_SCORE;
     let mut rep_avoid_used = false;
 
+    let mut first = true;
     for (mv, promo) in moves.iter().copied() {
         if ctx.stop {
             break;
@@ -2350,16 +2976,29 @@ fn search_depth(
         let rep_count = history_count(ctx, next_hash) as usize;
         let is_rep_draw = rep_count >= 2;
         history_push(ctx, next_hash);
-        let score = -negamax(pos, depth - 1, -beta, -alpha, ctx, tt, zob, next_hash, 1);
+        let score = if first {
+            -negamax(pos, depth - 1, -beta, -alpha, ctx, tt, zob, next_hash, 1)
+        } else {
+            let narrow = alpha.saturating_add(1);
+            let mut sc = -negamax(pos, depth - 1, -narrow, -alpha, ctx, tt, zob, next_hash, 1);
+            if sc > alpha && sc < beta {
+                sc = -negamax(pos, depth - 1, -beta, -alpha, ctx, tt, zob, next_hash, 1);
+            }
+            sc
+        };
         history_pop(ctx);
         unmake_move_in_place(pos, mv, promo, undo);
+        first = false;
         if ctx.stop {
             break;
         }
-        if score > alpha {
-            alpha = score;
+        if score > best_score {
+            best_score = score;
             best = Some((mv, promo));
             best_is_rep = is_rep_draw;
+        }
+        if score > alpha {
+            alpha = score;
         }
         if !is_rep_draw && score >= 0 && score > best_non_rep_non_losing_score {
             best_non_rep_non_losing_score = score;
@@ -2383,7 +3022,7 @@ fn search_depth(
         }
     }
 
-    let mut chosen_score = alpha;
+    let mut chosen_score = best_score;
     let mut chosen_move = best;
     if !ctx.stop && best_is_rep {
         if let Some(mv) = best_non_rep_non_losing {
@@ -2391,6 +3030,12 @@ fn search_depth(
             chosen_move = Some(mv);
             rep_avoid_used = true;
         }
+    }
+
+    const ROOT_CONTEMPT: i32 = 10;
+    const ROOT_CONTEMPT_THRESHOLD: i32 = 15;
+    if !ctx.stop && best_is_rep && chosen_score.abs() < ROOT_CONTEMPT_THRESHOLD {
+        chosen_score -= ROOT_CONTEMPT;
     }
 
     restore_move_buf(ctx, 0, moves);
@@ -2422,6 +3067,7 @@ fn search_impl(fen: &str, depth: u32, time_ms: u32, tt_mb: u32, history: &str) -
         None => return "{\"error\":\"invalid fen\"}".to_string(),
     };
 
+    let debug_root = ROOT_EVAL_DEBUG.with(|v| v.get());
     let zob = Zobrist::new();
     let mut tt = TT::new(tt_mb);
     let root_hash = compute_hash(&pos, &zob);
@@ -2461,16 +3107,77 @@ fn search_impl(fen: &str, depth: u32, time_ms: u32, tt_mb: u32, history: &str) -
     let mut best_score = 0;
     let mut completed_depth = 0;
     let mut rep_avoid_used = false;
+    let mut pv_move_hint: Option<(u8, u8, Option<char>)> = None;
+    let mut last_score = 0;
+
+    const USE_ASPIRATION: bool = true;
+    const ASP_WINDOW: i32 = 50;
+    const ASP_MAX_ITERS: u32 = 6;
 
     for d in 1..=max_depth {
-        let (score, mv, rep_avoid) = search_depth(&mut pos, d, &mut ctx, &mut tt, &zob, root_hash);
+        let mut score = 0;
+        let mut mv: Option<(Move, Option<char>)> = None;
+        let mut rep_avoid = false;
+
+        if USE_ASPIRATION && d > 1 {
+            let mut window = ASP_WINDOW;
+            let mut alpha = (last_score - window).max(-INF_SCORE);
+            let mut beta = (last_score + window).min(INF_SCORE);
+            let mut attempts = 0;
+
+            loop {
+                let (s, m, r) = search_depth(&mut pos, d, &mut ctx, &mut tt, &zob, root_hash, alpha, beta, pv_move_hint);
+                if ctx.stop {
+                    break;
+                }
+                score = s;
+                mv = m;
+                rep_avoid = r;
+
+                if score <= alpha {
+                    alpha = (alpha - window).max(-INF_SCORE);
+                    window = window.saturating_mul(2);
+                } else if score >= beta {
+                    beta = (beta + window).min(INF_SCORE);
+                    window = window.saturating_mul(2);
+                } else {
+                    break;
+                }
+
+                attempts += 1;
+                if attempts >= ASP_MAX_ITERS {
+                    alpha = -INF_SCORE;
+                    beta = INF_SCORE;
+                    let (s2, m2, r2) = search_depth(&mut pos, d, &mut ctx, &mut tt, &zob, root_hash, alpha, beta, pv_move_hint);
+                    if ctx.stop {
+                        break;
+                    }
+                    score = s2;
+                    mv = m2;
+                    rep_avoid = r2;
+                    break;
+                }
+            }
+        } else {
+            let (s, m, r) = search_depth(&mut pos, d, &mut ctx, &mut tt, &zob, root_hash, -INF_SCORE, INF_SCORE, pv_move_hint);
+            if ctx.stop {
+                break;
+            }
+            score = s;
+            mv = m;
+            rep_avoid = r;
+        }
+
         if ctx.stop {
             break;
         }
+
         best_score = score;
         best_move = mv;
         completed_depth = d;
         rep_avoid_used = rep_avoid;
+        last_score = best_score;
+        pv_move_hint = best_move.map(|(mv, promo)| (mv.from, mv.to, promo));
 
         if time_limit_ms > 0.0 && now_ms() - ctx.start_ms >= time_limit_ms {
             break;
@@ -2488,8 +3195,14 @@ fn search_impl(fen: &str, depth: u32, time_ms: u32, tt_mb: u32, history: &str) -
         .map(|(mv, promo)| move_to_uci(mv, promo))
         .unwrap_or_else(|| "".to_string());
     let pv_str = if best_str.is_empty() { "".to_string() } else { best_str.clone() };
+    let root_eval_field = if debug_root {
+        let root_json = root_eval_breakdown_json(&mut pos);
+        format!(",\"root_eval\":{}", root_json)
+    } else {
+        String::new()
+    };
 
-    format!(
+    let mut out = format!(
         "{{\"depth\":{},\"nodes\":{},\"time_ms\":{},\"nps\":{},\"score\":{},\"best\":\"{}\",\"pv\":\"{}\",\"rep_avoid\":{}}}",
         completed_depth,
         ctx.nodes,
@@ -2499,7 +3212,9 @@ fn search_impl(fen: &str, depth: u32, time_ms: u32, tt_mb: u32, history: &str) -
         best_str,
         pv_str,
         rep_avoid_used
-    )
+    );
+    out.push_str(&root_eval_field);
+    out
 }
 
 // WASM-Export: einfache Suche (Alpha-Beta, Material-Eval).
