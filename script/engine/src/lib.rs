@@ -1,7 +1,7 @@
 use wasm_bindgen::prelude::*;
 use std::collections::HashMap;
 use std::mem::size_of;
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 
 #[wasm_bindgen]
 extern "C" {
@@ -2690,6 +2690,35 @@ fn entry_best_move(entry: TTEntry) -> Option<(u8, u8, Option<char>)> {
     }
 }
 
+struct TTState {
+    mb: u32,
+    table: Option<TT>,
+}
+
+impl TTState {
+    fn new() -> Self {
+        TTState { mb: 0, table: None }
+    }
+}
+
+thread_local! {
+    static TT_STATE: RefCell<TTState> = RefCell::new(TTState::new());
+}
+
+fn with_tt<F, R>(tt_mb: u32, f: F) -> R
+where
+    F: FnOnce(&mut Option<TT>) -> R,
+{
+    TT_STATE.with(|cell| {
+        let mut state = cell.borrow_mut();
+        if state.mb != tt_mb {
+            state.table = TT::new(tt_mb);
+            state.mb = tt_mb;
+        }
+        f(&mut state.table)
+    })
+}
+
 struct SearchContext {
     nodes: u64,
     start_ms: f64,
@@ -2903,6 +2932,8 @@ fn negamax(
         return quiescence(pos, alpha, beta, ctx, tt, zob, hash, ply);
     }
 
+    let in_check = is_in_check(pos, pos.side_to_move);
+
     let mut moves = take_move_buf(ctx, ply);
     generate_legal_moves_into(pos, &mut moves);
     if moves.is_empty() {
@@ -2921,7 +2952,9 @@ fn negamax(
     let mut best = -INF_SCORE;
     let mut best_move: Option<(Move, Option<char>)> = None;
     let mut first = true;
+    let mut move_index: usize = 0;
     for (mv, promo) in moves.iter().copied() {
+        move_index = move_index.saturating_add(1);
         if ctx.stop {
             break;
         }
@@ -2929,8 +2962,26 @@ fn negamax(
         let Some(undo) = make_move_in_place(pos, mv, promo) else { continue; };
         let next_hash = update_hash_after_move(hash, zob, &undo, pos, mv);
         history_push(ctx, next_hash);
+        let use_lmr = !first
+            && ply > 0
+            && depth >= 3
+            && move_index > 3
+            && is_quiet
+            && !in_check;
+
         let score = if first {
             -negamax(pos, depth - 1, -beta, -alpha, ctx, tt, zob, next_hash, ply + 1)
+        } else if use_lmr {
+            let narrow = alpha.saturating_add(1);
+            let reduced_depth = depth - 2;
+            let mut sc = -negamax(pos, reduced_depth, -narrow, -alpha, ctx, tt, zob, next_hash, ply + 1);
+            if sc > alpha {
+                sc = -negamax(pos, depth - 1, -narrow, -alpha, ctx, tt, zob, next_hash, ply + 1);
+                if sc > alpha && sc < beta {
+                    sc = -negamax(pos, depth - 1, -beta, -alpha, ctx, tt, zob, next_hash, ply + 1);
+                }
+            }
+            sc
         } else {
             let narrow = alpha.saturating_add(1);
             let mut sc = -negamax(pos, depth - 1, -narrow, -alpha, ctx, tt, zob, next_hash, ply + 1);
@@ -3191,6 +3242,7 @@ fn build_pv_line(
 }
 
 fn search_impl(fen: &str, depth: u32, time_ms: u32, tt_mb: u32, history: &str) -> String {
+    with_tt(tt_mb, |tt| {
     let mut pos = match parse_fen(fen) {
         Some(p) => p,
         None => return "{\"error\":\"invalid fen\"}".to_string(),
@@ -3198,7 +3250,6 @@ fn search_impl(fen: &str, depth: u32, time_ms: u32, tt_mb: u32, history: &str) -
 
     let debug_root = ROOT_EVAL_DEBUG.with(|v| v.get());
     let zob = Zobrist::new();
-    let mut tt = TT::new(tt_mb);
     let root_hash = compute_hash(&pos, &zob);
 
     let time_limit_ms = time_ms as f64;
@@ -3266,7 +3317,7 @@ fn search_impl(fen: &str, depth: u32, time_ms: u32, tt_mb: u32, history: &str) -
             let mut attempts = 0;
 
             loop {
-                let (s, m, r) = search_depth(&mut pos, d, &mut ctx, &mut tt, &zob, root_hash, alpha, beta, pv_move_hint);
+                let (s, m, r) = search_depth(&mut pos, d, &mut ctx, tt, &zob, root_hash, alpha, beta, pv_move_hint);
                 if ctx.stop {
                     break;
                 }
@@ -3288,7 +3339,7 @@ fn search_impl(fen: &str, depth: u32, time_ms: u32, tt_mb: u32, history: &str) -
                 if attempts >= ASP_MAX_ITERS {
                     alpha = -INF_SCORE;
                     beta = INF_SCORE;
-                    let (s2, m2, r2) = search_depth(&mut pos, d, &mut ctx, &mut tt, &zob, root_hash, alpha, beta, pv_move_hint);
+                    let (s2, m2, r2) = search_depth(&mut pos, d, &mut ctx, tt, &zob, root_hash, alpha, beta, pv_move_hint);
                     if ctx.stop {
                         break;
                     }
@@ -3299,7 +3350,7 @@ fn search_impl(fen: &str, depth: u32, time_ms: u32, tt_mb: u32, history: &str) -
                 }
             }
         } else {
-            let (s, m, r) = search_depth(&mut pos, d, &mut ctx, &mut tt, &zob, root_hash, -INF_SCORE, INF_SCORE, pv_move_hint);
+            let (s, m, r) = search_depth(&mut pos, d, &mut ctx, tt, &zob, root_hash, -INF_SCORE, INF_SCORE, pv_move_hint);
             if ctx.stop {
                 break;
             }
@@ -3341,7 +3392,7 @@ fn search_impl(fen: &str, depth: u32, time_ms: u32, tt_mb: u32, history: &str) -
     let pv_str = if best_str.is_empty() {
         String::new()
     } else {
-        let line = build_pv_line(&pos, &tt, &zob, root_hash, completed_depth, best_move);
+        let line = build_pv_line(&pos, tt, &zob, root_hash, completed_depth, best_move);
         if line.is_empty() { best_str.clone() } else { line }
     };
     let root_eval_field = if debug_root {
@@ -3364,6 +3415,7 @@ fn search_impl(fen: &str, depth: u32, time_ms: u32, tt_mb: u32, history: &str) -
     );
     out.push_str(&root_eval_field);
     out
+    })
 }
 
 // WASM-Export: einfache Suche (Alpha-Beta, Material-Eval).

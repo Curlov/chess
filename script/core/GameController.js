@@ -306,6 +306,8 @@ export default class GameController {
             }
         }
 
+        this._logEngineResult(result);
+
         const bestUci = this._extractBestMove(result);
         if (!bestUci) {
             console.warn("autoOpponent: no best move found", result);
@@ -347,6 +349,25 @@ export default class GameController {
             }
         }
         return "";
+    }
+
+    _logEngineResult(result) {
+        if (!result || typeof result !== "object") {
+            console.log("[engine] result", result);
+            return;
+        }
+        const r = result.result && typeof result.result === "object" ? result.result : result;
+        const summary = {
+            depth: r.depth ?? null,
+            score: r.score ?? null,
+            nodes: r.nodes ?? null,
+            nps: r.nps ?? null,
+            best: r.best ?? null,
+            pv: r.pv ?? null,
+            ms: r.time_ms ?? null,
+            book: r.book === true
+        };
+        console.log("[engine] result", summary);
     }
 
     _isBookResult(result) {
