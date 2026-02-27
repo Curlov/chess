@@ -2406,23 +2406,17 @@ fn order_moves_in_place(
 ) {
     let pv_best = pv_move;
     let tt_best = tt_entry.and_then(entry_best_move);
-    let mut pv_chosen: Option<(Move, Option<char>)> = None;
-    let mut tt_move: Option<(Move, Option<char>)> = None;
+    let hash_best = if tt_best.is_some() { tt_best } else { pv_best };
+    let mut hash_move: Option<(Move, Option<char>)> = None;
     let mut killer_moves: [Option<(Move, Option<char>)>; 2] = [None, None];
     scratch.captures.clear();
     scratch.quiet.clear();
     scratch.rest.clear();
 
     for (mv, promo) in moves.drain(..) {
-        if let Some((bf, bt, bp)) = pv_best {
+        if let Some((bf, bt, bp)) = hash_best {
             if mv.from == bf && mv.to == bt && promo == bp {
-                pv_chosen = Some((mv, promo));
-                continue;
-            }
-        }
-        if let Some((bf, bt, bp)) = tt_best {
-            if mv.from == bf && mv.to == bt && promo == bp {
-                tt_move = Some((mv, promo));
+                hash_move = Some((mv, promo));
                 continue;
             }
         }
@@ -2469,10 +2463,7 @@ fn order_moves_in_place(
     }
 
     moves.clear();
-    if let Some(mv) = pv_chosen {
-        moves.push(mv);
-    }
-    if let Some(mv) = tt_move {
+    if let Some(mv) = hash_move {
         moves.push(mv);
     }
     for (_, mv, promo) in scratch.captures.drain(..) {
@@ -2614,6 +2605,7 @@ struct TTEntry {
     best_from: u8,
     best_to: u8,
     best_promo: u8,
+    gen: u8,
 }
 
 impl Default for TTEntry {
@@ -2626,9 +2618,12 @@ impl Default for TTEntry {
             best_from: 0,
             best_to: 0,
             best_promo: 0,
+            gen: 0,
         }
     }
 }
+
+const TT_BUCKET_SIZE: usize = 4;
 
 struct TT {
     entries: Vec<TTEntry>,
@@ -2654,35 +2649,76 @@ impl TT {
         while size.saturating_mul(2) <= n {
             size *= 2;
         }
+        while size > TT_BUCKET_SIZE && size % TT_BUCKET_SIZE != 0 {
+            size >>= 1;
+        }
+        if size < TT_BUCKET_SIZE {
+            return None;
+        }
         let entries = vec![TTEntry::default(); size];
-        Some(TT { entries, mask: size - 1 })
+        let buckets = size / TT_BUCKET_SIZE;
+        Some(TT { entries, mask: buckets - 1 })
     }
 
     fn probe(&self, key: u64) -> Option<TTEntry> {
         if self.entries.is_empty() {
             return None;
         }
-        let idx = (key as usize) & self.mask;
-        let entry = self.entries[idx];
-        if entry.depth == 0 {
-            return None;
+        let bucket = (key as usize) & self.mask;
+        let start = bucket * TT_BUCKET_SIZE;
+        let end = start + TT_BUCKET_SIZE;
+        for entry in self.entries[start..end].iter().copied() {
+            if entry.depth == 0 {
+                continue;
+            }
+            if entry.key == key {
+                return Some(entry);
+            }
         }
-        if entry.key == key {
-            Some(entry)
-        } else {
-            None
-        }
+        None
     }
 
-    fn store(&mut self, key: u64, depth: u32, value: i32, bound: u8, best: Option<(Move, Option<char>)>) {
-        if self.entries.is_empty() || depth == 0 {
+    fn store(&mut self, key: u64, depth: u32, value: i32, bound: u8, best: Option<(Move, Option<char>)>, gen: u8) {
+        if self.entries.is_empty() {
             return;
         }
-        let idx = (key as usize) & self.mask;
-        let cur = self.entries[idx];
-        if cur.key == key && cur.depth > depth as u16 {
-            return;
+        let bucket = (key as usize) & self.mask;
+        let start = bucket * TT_BUCKET_SIZE;
+        let end = start + TT_BUCKET_SIZE;
+        let depth_u16 = depth as u16;
+
+        let mut replace_idx: Option<usize> = None;
+        let mut oldest_age: u8 = 0;
+        let mut shallowest_depth: u16 = u16::MAX;
+
+        for i in start..end {
+            let entry = self.entries[i];
+            if entry.depth == 0 {
+                replace_idx = Some(i);
+                break;
+            }
+            if entry.key == key {
+                if entry.depth > depth_u16 && entry.gen == gen {
+                    return;
+                }
+                replace_idx = Some(i);
+                break;
+            }
+
+            let age = gen.wrapping_sub(entry.gen);
+            if replace_idx.is_none()
+                || age > oldest_age
+                || (age == oldest_age && entry.depth < shallowest_depth)
+            {
+                replace_idx = Some(i);
+                oldest_age = age;
+                shallowest_depth = entry.depth;
+            }
         }
+        let idx = match replace_idx {
+            Some(i) => i,
+            None => start,
+        };
         let (best_from, best_to, best_promo) = if let Some((mv, promo)) = best {
             (mv.from, mv.to, encode_promo(promo))
         } else {
@@ -2690,12 +2726,13 @@ impl TT {
         };
         self.entries[idx] = TTEntry {
             key,
-            depth: depth as u16,
+            depth: depth_u16,
             value,
             bound,
             best_from,
             best_to,
             best_promo,
+            gen,
         };
     }
 }
@@ -2730,12 +2767,21 @@ fn entry_best_move(entry: TTEntry) -> Option<(u8, u8, Option<char>)> {
 
 struct TTState {
     mb: u32,
+    gen: u8,
     table: Option<TT>,
+    killers: Vec<[Option<(u8, u8, u8)>; 2]>,
+    history_heur: [[[i32; 64]; 64]; 2],
 }
 
 impl TTState {
     fn new() -> Self {
-        TTState { mb: 0, table: None }
+        TTState {
+            mb: 0,
+            gen: 0,
+            table: None,
+            killers: Vec::new(),
+            history_heur: [[[0i32; 64]; 64]; 2],
+        }
     }
 }
 
@@ -2743,9 +2789,9 @@ thread_local! {
     static TT_STATE: RefCell<TTState> = RefCell::new(TTState::new());
 }
 
-fn with_tt<F, R>(tt_mb: u32, f: F) -> R
+fn with_tt_state<F, R>(tt_mb: u32, max_ply: usize, f: F) -> R
 where
-    F: FnOnce(&mut Option<TT>) -> R,
+    F: FnOnce(&mut TTState) -> R,
 {
     TT_STATE.with(|cell| {
         let mut state = cell.borrow_mut();
@@ -2753,7 +2799,10 @@ where
             state.table = TT::new(tt_mb);
             state.mb = tt_mb;
         }
-        f(&mut state.table)
+        if state.killers.len() < max_ply {
+            state.killers.resize(max_ply, [None; 2]);
+        }
+        f(&mut state)
     })
 }
 
@@ -2764,6 +2813,7 @@ struct SearchContext {
     time_check_interval_ms: f64,
     last_time_check_ms: f64,
     stop: bool,
+    tt_gen: u8,
     history: Vec<u64>,
     rep_counts: HashMap<u64, u8>,
     killers: Vec<[Option<(u8, u8, u8)>; 2]>,
@@ -2846,7 +2896,6 @@ fn quiescence(
     hash: u64,
     ply: i32,
 ) -> i32 {
-    let _ = tt;
     if ctx.stop {
         return 0;
     }
@@ -2860,6 +2909,26 @@ fn quiescence(
     ctx.nodes += 1;
     if should_stop(ctx) {
         return 0;
+    }
+
+    if let Some(table) = tt.as_ref() {
+        if let Some(entry) = table.probe(hash) {
+            let val = tt_probe_score(entry.value, ply);
+            match entry.bound {
+                TT_BOUND_EXACT => return val,
+                TT_BOUND_LOWER => {
+                    if val >= beta {
+                        return val;
+                    }
+                }
+                TT_BOUND_UPPER => {
+                    if val <= alpha {
+                        return val;
+                    }
+                }
+                _ => {}
+            }
+        }
     }
 
     let stand_pat = clamp_eval(evaluate_fast(pos));
@@ -2902,7 +2971,7 @@ fn quiescence(
         return stand_pat;
     }
 
-    order_moves_in_place(pos, &mut moves, None, None, None, None, &mut ctx.order_scratch);
+    order_moves_in_place(pos, &mut moves, None, None, None, Some(&ctx.history_heur), &mut ctx.order_scratch);
     for (mv, promo) in moves.iter().copied() {
         if ctx.stop {
             break;
@@ -2962,6 +3031,25 @@ fn negamax(
             None
         }
     };
+    if let Some(entry) = tt_entry {
+        if entry.depth as u32 >= depth {
+            let val = tt_probe_score(entry.value, ply);
+            match entry.bound {
+                TT_BOUND_EXACT => return val,
+                TT_BOUND_LOWER => {
+                    if val >= beta {
+                        return val;
+                    }
+                }
+                TT_BOUND_UPPER => {
+                    if val <= alpha {
+                        return val;
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
     if let Some(entry) = tt_entry {
         if entry.depth as u32 >= depth {
             let val = tt_probe_score(entry.value, ply);
@@ -3084,7 +3172,7 @@ fn negamax(
             TT_BOUND_EXACT
         };
         if let Some(table) = tt.as_mut() {
-            table.store(hash, depth, tt_store_score(best, ply), bound, best_move);
+            table.store(hash, depth, tt_store_score(best, ply), bound, best_move, ctx.tt_gen);
         }
     }
 
@@ -3195,7 +3283,7 @@ fn search_depth(
             TT_BOUND_EXACT
         };
         if let Some(table) = tt.as_mut() {
-            table.store(hash, depth, tt_store_score(alpha, 0), bound, best);
+            table.store(hash, depth, tt_store_score(alpha, 0), bound, best, ctx.tt_gen);
         }
     }
 
@@ -3300,7 +3388,6 @@ fn build_pv_line(
 }
 
 fn search_impl(fen: &str, depth: u32, time_ms: u32, tt_mb: u32, history: &str) -> String {
-    with_tt(tt_mb, |tt| {
     let mut pos = match parse_fen(fen) {
         Some(p) => p,
         None => return "{\"error\":\"invalid fen\"}".to_string(),
@@ -3316,41 +3403,53 @@ fn search_impl(fen: &str, depth: u32, time_ms: u32, tt_mb: u32, history: &str) -
     } else {
         if depth > 0 { depth } else { 1 }
     };
-
-    let start_ms = now_ms();
-    let time_check_interval_ms = if time_limit_ms <= 0.0 {
-        0.0
-    } else if time_limit_ms < 1000.0 {
-        time_limit_ms
-    } else if time_limit_ms < 2000.0 {
-        1000.0
-    } else {
-        2000.0
-    };
-    let history = build_history(history, &zob, root_hash);
-    let mut rep_counts: HashMap<u64, u8> = HashMap::new();
-    for h in history.iter() {
-        let entry = rep_counts.entry(*h).or_insert(0);
-        *entry = entry.saturating_add(1);
-    }
     let max_ply = (max_depth as usize).saturating_add(8);
-    let killers = vec![[None; 2]; max_ply];
-    let history_heur = [[[0i32; 64]; 64]; 2];
-    let move_buf = Vec::with_capacity(max_ply);
-    let mut ctx = SearchContext {
-        nodes: 0,
-        start_ms,
-        time_limit_ms,
-        time_check_interval_ms,
-        last_time_check_ms: start_ms,
-        stop: false,
-        history,
-        rep_counts,
-        killers,
-        history_heur,
-        move_buf,
-        order_scratch: MoveOrderScratch::new(),
-    };
+
+    with_tt_state(tt_mb, max_ply, |state| {
+        state.gen = state.gen.wrapping_add(1);
+        if state.gen == 0 {
+            state.gen = 1;
+        }
+        let tt_gen = state.gen;
+
+        let mut killers = std::mem::take(&mut state.killers);
+        if killers.len() < max_ply {
+            killers.resize(max_ply, [None; 2]);
+        }
+        let history_heur = state.history_heur;
+
+        let start_ms = now_ms();
+        let time_check_interval_ms = if time_limit_ms <= 0.0 {
+            0.0
+        } else if time_limit_ms < 1000.0 {
+            time_limit_ms
+        } else if time_limit_ms < 2000.0 {
+            1000.0
+        } else {
+            2000.0
+        };
+        let history = build_history(history, &zob, root_hash);
+        let mut rep_counts: HashMap<u64, u8> = HashMap::new();
+        for h in history.iter() {
+            let entry = rep_counts.entry(*h).or_insert(0);
+            *entry = entry.saturating_add(1);
+        }
+        let move_buf = Vec::with_capacity(max_ply);
+        let mut ctx = SearchContext {
+            nodes: 0,
+            start_ms,
+            time_limit_ms,
+            time_check_interval_ms,
+            last_time_check_ms: start_ms,
+            stop: false,
+            tt_gen,
+            history,
+            rep_counts,
+            killers,
+            history_heur,
+            move_buf,
+            order_scratch: MoveOrderScratch::new(),
+        };
 
     let mut best_move: Option<(Move, Option<char>)> = None;
     let mut best_score = 0;
@@ -3375,7 +3474,7 @@ fn search_impl(fen: &str, depth: u32, time_ms: u32, tt_mb: u32, history: &str) -
             let mut attempts = 0;
 
             loop {
-                let (s, m, r) = search_depth(&mut pos, d, &mut ctx, tt, &zob, root_hash, alpha, beta, pv_move_hint);
+                let (s, m, r) = search_depth(&mut pos, d, &mut ctx, &mut state.table, &zob, root_hash, alpha, beta, pv_move_hint);
                 if ctx.stop {
                     break;
                 }
@@ -3397,7 +3496,7 @@ fn search_impl(fen: &str, depth: u32, time_ms: u32, tt_mb: u32, history: &str) -
                 if attempts >= ASP_MAX_ITERS {
                     alpha = -INF_SCORE;
                     beta = INF_SCORE;
-                    let (s2, m2, r2) = search_depth(&mut pos, d, &mut ctx, tt, &zob, root_hash, alpha, beta, pv_move_hint);
+                    let (s2, m2, r2) = search_depth(&mut pos, d, &mut ctx, &mut state.table, &zob, root_hash, alpha, beta, pv_move_hint);
                     if ctx.stop {
                         break;
                     }
@@ -3408,7 +3507,7 @@ fn search_impl(fen: &str, depth: u32, time_ms: u32, tt_mb: u32, history: &str) -
                 }
             }
         } else {
-            let (s, m, r) = search_depth(&mut pos, d, &mut ctx, tt, &zob, root_hash, -INF_SCORE, INF_SCORE, pv_move_hint);
+            let (s, m, r) = search_depth(&mut pos, d, &mut ctx, &mut state.table, &zob, root_hash, -INF_SCORE, INF_SCORE, pv_move_hint);
             if ctx.stop {
                 break;
             }
@@ -3450,7 +3549,7 @@ fn search_impl(fen: &str, depth: u32, time_ms: u32, tt_mb: u32, history: &str) -
     let pv_str = if best_str.is_empty() {
         String::new()
     } else {
-        let line = build_pv_line(&pos, tt, &zob, root_hash, completed_depth, best_move);
+        let line = build_pv_line(&pos, &state.table, &zob, root_hash, completed_depth, best_move);
         if line.is_empty() { best_str.clone() } else { line }
     };
     let root_eval_field = if debug_root {
@@ -3472,7 +3571,11 @@ fn search_impl(fen: &str, depth: u32, time_ms: u32, tt_mb: u32, history: &str) -
         rep_avoid_used
     );
     out.push_str(&root_eval_field);
-    out
+
+        state.killers = ctx.killers;
+        state.history_heur = ctx.history_heur;
+
+        out
     })
 }
 
