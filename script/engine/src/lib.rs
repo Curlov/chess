@@ -483,9 +483,47 @@ const CASTLE_WQ: u8 = 2;
 const CASTLE_BK: u8 = 4;
 const CASTLE_BQ: u8 = 8;
 const MATE_SCORE: i32 = 30000;
+const MATE_THRESHOLD: i32 = 29000;
 const MATE_EARLY_STOP_PLIES: i32 = 10;
 const INF_SCORE: i32 = 32000;
 const MAX_PHASE: i32 = 24;
+
+#[inline]
+fn mate_score(ply: i32) -> i32 {
+    MATE_SCORE - ply
+}
+
+#[inline]
+fn is_mate_score(score: i32) -> bool {
+    score.abs() >= MATE_THRESHOLD
+}
+
+#[inline]
+fn clamp_eval(score: i32) -> i32 {
+    score.max(-MATE_THRESHOLD + 1).min(MATE_THRESHOLD - 1)
+}
+
+#[inline]
+fn tt_store_score(score: i32, ply: i32) -> i32 {
+    if score >= MATE_THRESHOLD {
+        score + ply
+    } else if score <= -MATE_THRESHOLD {
+        score - ply
+    } else {
+        score
+    }
+}
+
+#[inline]
+fn tt_probe_score(score: i32, ply: i32) -> i32 {
+    if score >= MATE_THRESHOLD {
+        score - ply
+    } else if score <= -MATE_THRESHOLD {
+        score + ply
+    } else {
+        score
+    }
+}
 
 // ---------------------------
 // Eval: Material + PST (MG/EG)
@@ -2824,7 +2862,7 @@ fn quiescence(
         return 0;
     }
 
-    let stand_pat = evaluate_fast(pos);
+    let stand_pat = clamp_eval(evaluate_fast(pos));
     if stand_pat >= beta {
         return beta;
     }
@@ -2838,12 +2876,27 @@ fn quiescence(
         generate_legal_moves_into(pos, &mut moves);
     } else {
         generate_tactical_moves_into(pos, &mut moves);
+        // Optional: auch ruhige Schachs hinzufügen (wichtig für Mattnetze).
+        let mut extra = take_move_buf(ctx, ply + 1);
+        generate_legal_moves_into(pos, &mut extra);
+        for (mv, promo) in extra.iter().copied() {
+            if !is_quiet_move(pos, mv, promo) {
+                continue;
+            }
+            let Some(undo) = make_move_in_place(pos, mv, promo) else { continue; };
+            let gives_check = is_in_check(pos, pos.side_to_move);
+            unmake_move_in_place(pos, mv, promo, undo);
+            if gives_check {
+                moves.push((mv, promo));
+            }
+        }
+        restore_move_buf(ctx, ply + 1, extra);
     }
 
     if moves.is_empty() {
         if in_check {
             restore_move_buf(ctx, ply, moves);
-            return -MATE_SCORE + ply;
+            return -mate_score(ply);
         }
         restore_move_buf(ctx, ply, moves);
         return stand_pat;
@@ -2911,16 +2964,17 @@ fn negamax(
     };
     if let Some(entry) = tt_entry {
         if entry.depth as u32 >= depth {
+            let val = tt_probe_score(entry.value, ply);
             match entry.bound {
-                TT_BOUND_EXACT => return entry.value,
+                TT_BOUND_EXACT => return val,
                 TT_BOUND_LOWER => {
-                    if entry.value >= beta {
-                        return entry.value;
+                    if val >= beta {
+                        return val;
                     }
                 }
                 TT_BOUND_UPPER => {
-                    if entry.value <= alpha {
-                        return entry.value;
+                    if val <= alpha {
+                        return val;
                     }
                 }
                 _ => {}
@@ -2939,7 +2993,7 @@ fn negamax(
     if moves.is_empty() {
         restore_move_buf(ctx, ply, moves);
         return if is_in_check(pos, pos.side_to_move) {
-            -MATE_SCORE + ply
+            -mate_score(ply)
         } else {
             0
         };
@@ -2960,33 +3014,37 @@ fn negamax(
         }
         let is_quiet = is_quiet_move(pos, mv, promo);
         let Some(undo) = make_move_in_place(pos, mv, promo) else { continue; };
+        let gives_check = is_in_check(pos, pos.side_to_move);
         let next_hash = update_hash_after_move(hash, zob, &undo, pos, mv);
         history_push(ctx, next_hash);
+        let extend = gives_check && depth <= 3;
+        let base_depth = depth - 1 + if extend { 1 } else { 0 };
         let use_lmr = !first
             && ply > 0
-            && depth >= 3
+            && base_depth >= 3
             && move_index > 3
             && is_quiet
-            && !in_check;
+            && !in_check
+            && !gives_check;
 
         let score = if first {
-            -negamax(pos, depth - 1, -beta, -alpha, ctx, tt, zob, next_hash, ply + 1)
+            -negamax(pos, base_depth, -beta, -alpha, ctx, tt, zob, next_hash, ply + 1)
         } else if use_lmr {
             let narrow = alpha.saturating_add(1);
-            let reduced_depth = depth - 2;
+            let reduced_depth = base_depth.saturating_sub(1);
             let mut sc = -negamax(pos, reduced_depth, -narrow, -alpha, ctx, tt, zob, next_hash, ply + 1);
             if sc > alpha {
-                sc = -negamax(pos, depth - 1, -narrow, -alpha, ctx, tt, zob, next_hash, ply + 1);
+                sc = -negamax(pos, base_depth, -narrow, -alpha, ctx, tt, zob, next_hash, ply + 1);
                 if sc > alpha && sc < beta {
-                    sc = -negamax(pos, depth - 1, -beta, -alpha, ctx, tt, zob, next_hash, ply + 1);
+                    sc = -negamax(pos, base_depth, -beta, -alpha, ctx, tt, zob, next_hash, ply + 1);
                 }
             }
             sc
         } else {
             let narrow = alpha.saturating_add(1);
-            let mut sc = -negamax(pos, depth - 1, -narrow, -alpha, ctx, tt, zob, next_hash, ply + 1);
+            let mut sc = -negamax(pos, base_depth, -narrow, -alpha, ctx, tt, zob, next_hash, ply + 1);
             if sc > alpha && sc < beta {
-                sc = -negamax(pos, depth - 1, -beta, -alpha, ctx, tt, zob, next_hash, ply + 1);
+                sc = -negamax(pos, base_depth, -beta, -alpha, ctx, tt, zob, next_hash, ply + 1);
             }
             sc
         };
@@ -3014,7 +3072,7 @@ fn negamax(
     }
 
     if best == -INF_SCORE {
-        best = evaluate(pos);
+        best = clamp_eval(evaluate(pos));
     }
 
     if !ctx.stop {
@@ -3026,7 +3084,7 @@ fn negamax(
             TT_BOUND_EXACT
         };
         if let Some(table) = tt.as_mut() {
-            table.store(hash, depth, best, bound, best_move);
+            table.store(hash, depth, tt_store_score(best, ply), bound, best_move);
         }
     }
 
@@ -3064,7 +3122,7 @@ fn search_depth(
     let mut moves = take_move_buf(ctx, 0);
     generate_legal_moves_into(pos, &mut moves);
     if moves.is_empty() {
-        let score = if is_in_check(pos, pos.side_to_move) { -MATE_SCORE } else { 0 };
+        let score = if is_in_check(pos, pos.side_to_move) { -mate_score(0) } else { 0 };
         restore_move_buf(ctx, 0, moves);
         return (score, None, false);
     }
@@ -3137,7 +3195,7 @@ fn search_depth(
             TT_BOUND_EXACT
         };
         if let Some(table) = tt.as_mut() {
-            table.store(hash, depth, alpha, bound, best);
+            table.store(hash, depth, tt_store_score(alpha, 0), bound, best);
         }
     }
 

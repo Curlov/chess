@@ -94,7 +94,7 @@ if (mediaUrls != null) {
             const b1 = new ChessBoard("#b1", mediaMemory, device, {
                 interactive: true, 
                 ownColorOnly: false, 
-                showLegalMoves: true, 
+                showLegalMoves: false, 
                 showSelectedField: true,
                 showMoves: true, 
                 soundON: device === "desktop",
