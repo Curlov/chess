@@ -8,13 +8,29 @@ import {
 } from '../utils/utilitys.js';
 
 export default class GameController {
-    constructor(board, moveList) {
+    constructor(board, moveList, options = {}) {
         this.board    = board;
         this.moveList = moveList;
 
         this.baseFen     = null; // Basisstellung (Start, Puzzle, egal)
         this.currentFen  = null;
         this.currentMeta = null;
+
+        const {
+            engineTimeMs = 15000,
+            engineTtMb = 64,
+            autoOpponent = true,
+            bookPauseMs = 3000,
+            onEngineThinkStart = null,
+            onEngineThinkEnd = null
+        } = options || {};
+
+        this.engineTimeMs = engineTimeMs;
+        this.engineTtMb = engineTtMb;
+        this.autoOpponent = autoOpponent === true;
+        this.bookPauseMs = bookPauseMs;
+        this.onEngineThinkStart = typeof onEngineThinkStart === "function" ? onEngineThinkStart : null;
+        this.onEngineThinkEnd = typeof onEngineThinkEnd === "function" ? onEngineThinkEnd : null;
 
         this.board.onUserMove = (from, to, capturedPiece) => {
             this.handleUserMove(from, to, capturedPiece);
@@ -122,6 +138,10 @@ export default class GameController {
                 fenAfter
             });
 
+            if (this.autoOpponent) {
+                await this._autoOpponentMove();
+            }
+
         } catch (err) {
             console.error("Fehler in handleUserMove / applyMove:", err);
         }
@@ -218,6 +238,10 @@ export default class GameController {
                     }
                 }
             }
+            const HISTORY_LIMIT = 128;
+            if (historyList.length > HISTORY_LIMIT) {
+                historyList.splice(0, historyList.length - HISTORY_LIMIT);
+            }
             history = historyList.join("\n");
 
             if (this.baseFen === getStartFen()) {
@@ -249,6 +273,181 @@ export default class GameController {
             console.error("Fehler in search:", err);
             return null;
         }
+    }
+
+    async _autoOpponentMove() {
+        const fenBefore = this.currentFen;
+        if (!fenBefore) return;
+
+        const thinkStart = performance.now();
+        if (this.onEngineThinkStart) {
+            this.onEngineThinkStart({ durationMs: this.engineTimeMs });
+        }
+
+        let result = null;
+        try {
+            result = await this.search({
+                fen: fenBefore,
+                timeMs: this.engineTimeMs,
+                ttMb: this.engineTtMb
+            });
+        } catch (err) {
+            console.error("autoOpponent: search failed:", err);
+            return;
+        } finally {
+            if (this.onEngineThinkEnd) {
+                const elapsedMs = performance.now() - thinkStart;
+                const remainingMs = Math.max(0, Number(this.engineTimeMs) - elapsedMs);
+                this.onEngineThinkEnd({
+                    durationMs: this.engineTimeMs,
+                    elapsedMs,
+                    remainingMs
+                });
+            }
+        }
+
+        const bestUci = this._extractBestMove(result);
+        if (!bestUci) {
+            console.warn("autoOpponent: no best move found", result);
+            return;
+        }
+
+        if (this._isBookResult(result) && Number.isFinite(this.bookPauseMs) && this.bookPauseMs > 0) {
+            if (this.onEngineThinkStart) {
+                this.onEngineThinkStart({ durationMs: this.bookPauseMs });
+            }
+            await this._sleep(this.bookPauseMs);
+            if (this.onEngineThinkEnd) {
+                this.onEngineThinkEnd({ durationMs: this.bookPauseMs, elapsedMs: this.bookPauseMs, remainingMs: 0 });
+            }
+        }
+
+        try {
+            await this._applyEngineMove(bestUci, fenBefore);
+        } catch (err) {
+            console.error("autoOpponent: apply failed:", err);
+        }
+    }
+
+    _extractBestMove(result) {
+        if (!result) return "";
+        if (typeof result.best === "string" && result.best.trim().length >= 4) {
+            return result.best.trim();
+        }
+        if (typeof result.pv === "string" && result.pv.trim()) {
+            return result.pv.trim().split(/\s+/)[0] || "";
+        }
+        if (result.result && typeof result.result === "object") {
+            const nested = result.result;
+            if (typeof nested.best === "string" && nested.best.trim().length >= 4) {
+                return nested.best.trim();
+            }
+            if (typeof nested.pv === "string" && nested.pv.trim()) {
+                return nested.pv.trim().split(/\s+/)[0] || "";
+            }
+        }
+        return "";
+    }
+
+    _isBookResult(result) {
+        if (!result) return false;
+        if (result.book === true) return true;
+        if (result.result && typeof result.result === "object" && result.result.book === true) return true;
+        return false;
+    }
+
+    _sleep(ms) {
+        return new Promise((resolve) => {
+            setTimeout(resolve, Math.max(0, Number(ms) || 0));
+        });
+    }
+
+    _parseUciMove(uci) {
+        if (typeof uci !== "string") return null;
+        const token = uci.trim().split(/\s+/)[0];
+        if (token.length < 4) return null;
+        const from = lanToField(token.slice(0, 2));
+        const to = lanToField(token.slice(2, 4));
+        if (!Number.isFinite(from) || !Number.isFinite(to)) return null;
+        const promo = token.length >= 5 ? token[4] : "";
+        return { from, to, promo };
+    }
+
+    _getSideToMove(fen) {
+        if (!fen || typeof fen !== "string") return null;
+        const parts = fen.trim().split(/\s+/);
+        if (parts.length < 2) return null;
+        const side = parts[1];
+        return side === "w" || side === "b" ? side : null;
+    }
+
+    async _applyEngineMove(uci, fenBefore) {
+        const parsed = this._parseUciMove(uci);
+        if (!parsed) {
+            console.warn("applyEngineMove: invalid UCI", uci);
+            return;
+        }
+
+        const { from, to, promo } = parsed;
+        const movingPiece = this.board.getPieceAt(from);
+
+        if (!movingPiece) {
+            console.warn("applyEngineMove: piece not found on board", { from, to, uci });
+            const fallbackFen = await this.engine.applyMove(fenBefore, from, to, promo);
+            this.currentFen = fallbackFen;
+            this.currentMeta = fenZuFigurenListe(fallbackFen);
+            this.setPositionFromFen(fallbackFen);
+            return;
+        }
+
+        let capturedPiece = this.board.getPieceAt(to);
+        if (movingPiece.dataset.type?.toLowerCase() === "p") {
+            if (this.board.enPassantField != null && Number(to) === this.board.enPassantField && !capturedPiece) {
+                const isWhite = movingPiece.dataset.type === movingPiece.dataset.type.toUpperCase();
+                const capField = isWhite ? Number(to) - 8 : Number(to) + 8;
+                const epPiece = this.board.getPieceAt(capField);
+                if (epPiece) {
+                    capturedPiece = epPiece;
+                }
+            }
+        }
+
+        if (capturedPiece) {
+            this.board.playSound('capture');
+            this.board.removePieceEffect(capturedPiece);
+        } else {
+            this.board.playSound('move');
+        }
+
+        if (movingPiece.dataset.type?.toLowerCase() === "k" && Math.abs(Number(to) - Number(from)) === 2) {
+            this.board.moveCastleRook(from, to);
+        }
+
+        const sideToMove = this._getSideToMove(fenBefore);
+        const promotion = promo
+            ? (sideToMove === "w" ? promo.toUpperCase() : promo.toLowerCase())
+            : "";
+
+        this.board.move(from, to, true, () => {
+            if (promotion) {
+                this.board.promotePiece(from, to, promotion);
+            }
+        });
+
+        const fenAfter = await this.engine.applyMove(fenBefore, from, to, promotion);
+
+        this.currentFen  = fenAfter;
+        this.currentMeta = fenZuFigurenListe(fenAfter);
+        this.board.setEnPassant(this.currentMeta.enpassant);
+        this.board.setSideToMove(this.currentMeta.moveRight);
+
+        this.moveList?.addMove({
+            from,
+            to,
+            promotion,
+            fenBefore,
+            fenAfter
+        });
     }
 
     _buildUciHistory() {

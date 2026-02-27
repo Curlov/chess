@@ -118,6 +118,12 @@ export default class ChessBoard {
         root.style.setProperty('--chessBoard', `${this.sizeChessBoard}px`);
         root.style.setProperty('--pieces',     `${sizePieces}px`);
 
+        // Zeitbalken nutzt :root-Variablen, damit er außerhalb des Containers korrekt skaliert
+        document.documentElement.style.setProperty('--chessBoard', `${this.sizeChessBoard}px`);
+        document.documentElement.style.setProperty('--allFields', `${sizeAllFields}px`);
+        const timebarWidth = this.useBackgroundImg === true ? this.sizeChessBoard : sizeAllFields;
+        document.documentElement.style.setProperty('--timebarWidth', `${timebarWidth}px`);
+
         // Falls schon Figuren auf dem Brett stehen: alle auf neue Größen anpassen
         const pieces = this.board.querySelectorAll(".piece");
         pieces.forEach((piece) => {

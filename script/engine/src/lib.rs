@@ -13,6 +13,8 @@ thread_local! {
     static ROOT_EVAL_DEBUG: Cell<bool> = Cell::new(false);
 }
 
+const TIME_CHECK_NODE_INTERVAL: u64 = 256;
+
 #[inline]
 // Erzeugt ein Bitboard mit genau einem gesetzten Bit.
 // `sq` ist das Feld 0..63 (a1=0, h8=63).
@@ -481,6 +483,7 @@ const CASTLE_WQ: u8 = 2;
 const CASTLE_BK: u8 = 4;
 const CASTLE_BQ: u8 = 8;
 const MATE_SCORE: i32 = 30000;
+const MATE_EARLY_STOP_PLIES: i32 = 10;
 const INF_SCORE: i32 = 32000;
 const MAX_PHASE: i32 = 24;
 
@@ -760,6 +763,19 @@ struct Position {
     halfmove: u32,
     fullmove: u32,
     bb: Bitboards,
+}
+
+#[inline]
+fn clone_position(pos: &Position) -> Position {
+    Position {
+        board: pos.board,
+        side_to_move: pos.side_to_move,
+        castling: pos.castling,
+        ep: pos.ep,
+        halfmove: pos.halfmove,
+        fullmove: pos.fullmove,
+        bb: pos.bb,
+    }
 }
 
 // ---------------------------
@@ -1764,6 +1780,36 @@ fn evaluate_breakdown(pos: &Position) -> EvalBreakdown {
     }
 }
 
+fn evaluate_fast(pos: &Position) -> i32 {
+    let mut material_mg = 0;
+    let mut material_eg = 0;
+    let mut pst_mg = 0;
+    let mut pst_eg = 0;
+
+    add_piece_scores(&mut material_mg, &mut material_eg, &mut pst_mg, &mut pst_eg, pos.bb.wp, 0, true);
+    add_piece_scores(&mut material_mg, &mut material_eg, &mut pst_mg, &mut pst_eg, pos.bb.wn, 1, true);
+    add_piece_scores(&mut material_mg, &mut material_eg, &mut pst_mg, &mut pst_eg, pos.bb.wb, 2, true);
+    add_piece_scores(&mut material_mg, &mut material_eg, &mut pst_mg, &mut pst_eg, pos.bb.wr, 3, true);
+    add_piece_scores(&mut material_mg, &mut material_eg, &mut pst_mg, &mut pst_eg, pos.bb.wq, 4, true);
+    add_piece_scores(&mut material_mg, &mut material_eg, &mut pst_mg, &mut pst_eg, pos.bb.wk, 5, true);
+
+    add_piece_scores(&mut material_mg, &mut material_eg, &mut pst_mg, &mut pst_eg, pos.bb.bp, 0, false);
+    add_piece_scores(&mut material_mg, &mut material_eg, &mut pst_mg, &mut pst_eg, pos.bb.bn, 1, false);
+    add_piece_scores(&mut material_mg, &mut material_eg, &mut pst_mg, &mut pst_eg, pos.bb.bb, 2, false);
+    add_piece_scores(&mut material_mg, &mut material_eg, &mut pst_mg, &mut pst_eg, pos.bb.br, 3, false);
+    add_piece_scores(&mut material_mg, &mut material_eg, &mut pst_mg, &mut pst_eg, pos.bb.bq, 4, false);
+    add_piece_scores(&mut material_mg, &mut material_eg, &mut pst_mg, &mut pst_eg, pos.bb.bk, 5, false);
+
+    let phase = compute_phase(pos);
+    let material = blend(material_mg, material_eg, phase);
+    let pst = blend(pst_mg, pst_eg, phase);
+
+    let mut total = material + pst;
+    let sign = if pos.side_to_move == Color::White { 1 } else { -1 };
+    total *= sign;
+    total
+}
+
 fn evaluate(pos: &Position) -> i32 {
     evaluate_breakdown(pos).total
 }
@@ -2648,6 +2694,8 @@ struct SearchContext {
     nodes: u64,
     start_ms: f64,
     time_limit_ms: f64,
+    time_check_interval_ms: f64,
+    last_time_check_ms: f64,
     stop: bool,
     history: Vec<u64>,
     rep_counts: HashMap<u64, u8>,
@@ -2682,6 +2730,29 @@ fn history_pop(ctx: &mut SearchContext) {
     }
 }
 
+#[inline]
+fn should_stop(ctx: &mut SearchContext) -> bool {
+    if ctx.stop {
+        return true;
+    }
+    if ctx.time_limit_ms <= 0.0 {
+        return false;
+    }
+    if (ctx.nodes & (TIME_CHECK_NODE_INTERVAL - 1)) != 0 {
+        return false;
+    }
+    let now = now_ms();
+    if now - ctx.last_time_check_ms < ctx.time_check_interval_ms {
+        return false;
+    }
+    ctx.last_time_check_ms = now;
+    if now - ctx.start_ms >= ctx.time_limit_ms {
+        ctx.stop = true;
+        return true;
+    }
+    false
+}
+
 fn take_move_buf(ctx: &mut SearchContext, ply: i32) -> Vec<(Move, Option<char>)> {
     let idx = if ply < 0 { 0 } else { ply as usize };
     if idx >= ctx.move_buf.len() {
@@ -2712,10 +2783,6 @@ fn quiescence(
     if ctx.stop {
         return 0;
     }
-    if ctx.time_limit_ms > 0.0 && now_ms() - ctx.start_ms >= ctx.time_limit_ms {
-        ctx.stop = true;
-        return 0;
-    }
     if pos.halfmove >= 100 {
         return 0;
     }
@@ -2724,8 +2791,11 @@ fn quiescence(
     }
 
     ctx.nodes += 1;
+    if should_stop(ctx) {
+        return 0;
+    }
 
-    let stand_pat = evaluate(pos);
+    let stand_pat = evaluate_fast(pos);
     if stand_pat >= beta {
         return beta;
     }
@@ -2791,10 +2861,6 @@ fn negamax(
     if ctx.stop {
         return 0;
     }
-    if ctx.time_limit_ms > 0.0 && now_ms() - ctx.start_ms >= ctx.time_limit_ms {
-        ctx.stop = true;
-        return 0;
-    }
     if pos.halfmove >= 100 {
         return 0;
     }
@@ -2803,6 +2869,9 @@ fn negamax(
     }
 
     ctx.nodes += 1;
+    if should_stop(ctx) {
+        return 0;
+    }
 
     let tt_entry = {
         if let Some(table) = tt.as_ref() {
@@ -2967,8 +3036,7 @@ fn search_depth(
         if ctx.stop {
             break;
         }
-        if ctx.time_limit_ms > 0.0 && now_ms() - ctx.start_ms >= ctx.time_limit_ms {
-            ctx.stop = true;
+        if should_stop(ctx) {
             break;
         }
         let Some(undo) = make_move_in_place(pos, mv, promo) else { continue; };
@@ -3053,12 +3121,73 @@ fn build_history(history: &str, zob: &Zobrist, root_hash: u64) -> Vec<u64> {
             out.push(compute_hash(&pos, zob));
         }
     }
-    if out.len() > 512 {
-        let start = out.len() - 512;
+    if out.len() > 128 {
+        let start = out.len() - 128;
         out = out.split_off(start);
     }
     out.push(root_hash);
     out
+}
+
+fn build_pv_line(
+    pos: &Position,
+    tt: &Option<TT>,
+    zob: &Zobrist,
+    hash: u64,
+    max_len: u32,
+    first_move: Option<(Move, Option<char>)>,
+) -> String {
+    if max_len == 0 {
+        return String::new();
+    }
+
+    let mut pos = clone_position(pos);
+    let mut cur_hash = hash;
+    let mut line: Vec<String> = Vec::new();
+    let mut seen: Vec<u64> = Vec::new();
+    let mut next_move = first_move;
+
+    for _ in 0..max_len {
+        if seen.contains(&cur_hash) {
+            break;
+        }
+        seen.push(cur_hash);
+
+        let (mv, promo) = if let Some(mv) = next_move.take() {
+            mv
+        } else {
+            let table = match tt.as_ref() {
+                Some(t) => t,
+                None => break,
+            };
+            let entry = match table.probe(cur_hash) {
+                Some(e) => e,
+                None => break,
+            };
+            let (from, to, promo_hint) = match entry_best_move(entry) {
+                Some(m) => m,
+                None => break,
+            };
+            let mv = match find_legal_move(&mut pos, from, to) {
+                Some(m) => m,
+                None => break,
+            };
+            let promo = if let MoveKind::Promotion = mv.kind {
+                Some(promo_hint.unwrap_or('q').to_ascii_lowercase())
+            } else {
+                None
+            };
+            (mv, promo)
+        };
+
+        line.push(move_to_uci(mv, promo));
+
+        let Some(undo) = make_move_in_place(&mut pos, mv, promo) else { break; };
+        let next_hash = update_hash_after_move(cur_hash, zob, &undo, &pos, mv);
+        cur_hash = next_hash;
+    }
+
+    line.join(" ")
 }
 
 fn search_impl(fen: &str, depth: u32, time_ms: u32, tt_mb: u32, history: &str) -> String {
@@ -3080,6 +3209,15 @@ fn search_impl(fen: &str, depth: u32, time_ms: u32, tt_mb: u32, history: &str) -
     };
 
     let start_ms = now_ms();
+    let time_check_interval_ms = if time_limit_ms <= 0.0 {
+        0.0
+    } else if time_limit_ms < 1000.0 {
+        time_limit_ms
+    } else if time_limit_ms < 2000.0 {
+        1000.0
+    } else {
+        2000.0
+    };
     let history = build_history(history, &zob, root_hash);
     let mut rep_counts: HashMap<u64, u8> = HashMap::new();
     for h in history.iter() {
@@ -3094,6 +3232,8 @@ fn search_impl(fen: &str, depth: u32, time_ms: u32, tt_mb: u32, history: &str) -
         nodes: 0,
         start_ms,
         time_limit_ms,
+        time_check_interval_ms,
+        last_time_check_ms: start_ms,
         stop: false,
         history,
         rep_counts,
@@ -3179,6 +3319,10 @@ fn search_impl(fen: &str, depth: u32, time_ms: u32, tt_mb: u32, history: &str) -
         last_score = best_score;
         pv_move_hint = best_move.map(|(mv, promo)| (mv.from, mv.to, promo));
 
+        if best_score >= MATE_SCORE - MATE_EARLY_STOP_PLIES {
+            break;
+        }
+
         if time_limit_ms > 0.0 && now_ms() - ctx.start_ms >= time_limit_ms {
             break;
         }
@@ -3194,7 +3338,12 @@ fn search_impl(fen: &str, depth: u32, time_ms: u32, tt_mb: u32, history: &str) -
     let best_str = best_move
         .map(|(mv, promo)| move_to_uci(mv, promo))
         .unwrap_or_else(|| "".to_string());
-    let pv_str = if best_str.is_empty() { "".to_string() } else { best_str.clone() };
+    let pv_str = if best_str.is_empty() {
+        String::new()
+    } else {
+        let line = build_pv_line(&pos, &tt, &zob, root_hash, completed_depth, best_move);
+        if line.is_empty() { best_str.clone() } else { line }
+    };
     let root_eval_field = if debug_root {
         let root_json = root_eval_breakdown_json(&mut pos);
         format!(",\"root_eval\":{}", root_json)

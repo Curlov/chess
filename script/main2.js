@@ -39,6 +39,52 @@ if (useBackgroundImg === true) {
 // Hier geht es nur weiter, wenn mediaUrls entsprechende Links enthält - sonst sauberer Abbruch
 if (mediaUrls != null) {
     window.addEventListener("load", () => {
+        const timebar = document.querySelector(".timebar");
+        const timebarFill = timebar?.querySelector(".timebar-fill");
+
+        const engineTimer = (() => {
+            let rafId = 0;
+            let start = 0;
+            let duration = 0;
+
+            const tick = () => {
+                const now = performance.now();
+                const elapsed = now - start;
+                const remaining = Math.max(0, duration - elapsed);
+                const ratio = duration > 0 ? remaining / duration : 0;
+
+                if (timebarFill) {
+                    timebarFill.style.width = `${Math.max(0, Math.min(1, ratio)) * 100}%`;
+                }
+
+                if (remaining > 0) {
+                    rafId = requestAnimationFrame(tick);
+                }
+            };
+
+            return {
+                start(durationMs) {
+                    if (!timebar || !timebarFill) return;
+                    if (rafId) cancelAnimationFrame(rafId);
+                    duration = Math.max(0, Number(durationMs) || 0);
+                    start = performance.now();
+                    timebar.classList.remove("is-idle");
+                    timebarFill.style.width = "100%";
+                    rafId = requestAnimationFrame(tick);
+                },
+                stop(remainingMs, durationMs) {
+                    if (!timebar || !timebarFill) return;
+                    if (rafId) cancelAnimationFrame(rafId);
+                    rafId = 0;
+                    if (Number.isFinite(remainingMs) && Number.isFinite(durationMs) && durationMs > 0) {
+                        const ratio = Math.max(0, Math.min(1, remainingMs / durationMs));
+                        timebarFill.style.width = `${ratio * 100}%`;
+                    }
+                    timebar.classList.add("is-idle");
+                }
+            };
+        })();
+
         const mediaLoader = new MediaLoader(mediaUrls);
         mediaLoader.loadMedia().then(() => {
             const mediaMemory = mediaLoader.getLoadedMedia();
@@ -47,7 +93,7 @@ if (mediaUrls != null) {
             const b1 = new ChessBoard("#b1", mediaMemory, device, {
                 interactive: true, 
                 ownColorOnly: false, 
-                showLegalMoves: true, 
+                showLegalMoves: false, 
                 showSelectedField: true,
                 showMoves: true, 
                 soundON: device === "desktop",
@@ -57,7 +103,17 @@ if (mediaUrls != null) {
             });
 
             const mL1 = new MoveList();
-            const c1 = new GameController(b1, mL1);
+            const ENGINE_TIME_MS = 15000;
+            const ENGINE_TT_MB = 64;
+            const BOOK_PAUSE_MS = 1000;
+            const c1 = new GameController(b1, mL1, {
+                engineTimeMs: ENGINE_TIME_MS,
+                engineTtMb: ENGINE_TT_MB,
+                bookPauseMs: BOOK_PAUSE_MS,
+                autoOpponent: true,
+                onEngineThinkStart: ({ durationMs }) => engineTimer.start(durationMs),
+                onEngineThinkEnd: ({ remainingMs, durationMs }) => engineTimer.stop(remainingMs, durationMs)
+            });
 
 //            getPuzzleFen().then((x)=> c1.initPosition(x));
             const fen = getStartFen();
