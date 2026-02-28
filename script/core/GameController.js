@@ -18,6 +18,7 @@ export default class GameController {
 
         const {
             engineTimeMs = 15000,
+            engineMinTimeMs = 1000,
             engineTtMb = 64,
             autoOpponent = true,
             bookPauseMs = 3000,
@@ -26,6 +27,7 @@ export default class GameController {
         } = options || {};
 
         this.engineTimeMs = engineTimeMs;
+        this.engineMinTimeMs = engineMinTimeMs;
         this.engineTtMb = engineTtMb;
         this.autoOpponent = autoOpponent === true;
         this.bookPauseMs = bookPauseMs;
@@ -285,6 +287,7 @@ export default class GameController {
         }
 
         let result = null;
+        let searchFailed = false;
         try {
             result = await this.search({
                 fen: fenBefore,
@@ -293,8 +296,10 @@ export default class GameController {
             });
         } catch (err) {
             console.error("autoOpponent: search failed:", err);
-            return;
-        } finally {
+            searchFailed = true;
+        }
+
+        if (searchFailed) {
             if (this.onEngineThinkEnd) {
                 const elapsedMs = performance.now() - thinkStart;
                 const remainingMs = Math.max(0, Number(this.engineTimeMs) - elapsedMs);
@@ -304,6 +309,17 @@ export default class GameController {
                     remainingMs
                 });
             }
+            return;
+        }
+
+        if (this.onEngineThinkEnd) {
+            const elapsedMs = performance.now() - thinkStart;
+            const remainingMs = Math.max(0, Number(this.engineTimeMs) - elapsedMs);
+            this.onEngineThinkEnd({
+                durationMs: this.engineTimeMs,
+                elapsedMs,
+                remainingMs
+            });
         }
 
         this._logEngineResult(result);
@@ -321,6 +337,14 @@ export default class GameController {
             await this._sleep(this.bookPauseMs);
             if (this.onEngineThinkEnd) {
                 this.onEngineThinkEnd({ durationMs: this.bookPauseMs, elapsedMs: this.bookPauseMs, remainingMs: 0 });
+            }
+        }
+
+        const minThinkMs = Math.max(0, Number(this.engineMinTimeMs) || 0);
+        if (minThinkMs > 0) {
+            const elapsedBeforeMove = performance.now() - thinkStart;
+            if (elapsedBeforeMove < minThinkMs) {
+                await this._sleep(minThinkMs - elapsedBeforeMove);
             }
         }
 

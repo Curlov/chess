@@ -104,10 +104,12 @@ if (mediaUrls != null) {
 
             const mL1 = new MoveList();
             const ENGINE_TIME_MS = 12500;
+            const ENGINE_MIN_TIME_MS = 1000;
             const ENGINE_TT_MB = 256;
             const BOOK_PAUSE_MS = 500;
             const c1 = new GameController(b1, mL1, {
                 engineTimeMs: ENGINE_TIME_MS,
+                engineMinTimeMs: ENGINE_MIN_TIME_MS,
                 engineTtMb: ENGINE_TT_MB,
                 bookPauseMs: BOOK_PAUSE_MS,
                 autoOpponent: true,
