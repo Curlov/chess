@@ -142,6 +142,11 @@ export default class GameController {
                 fenAfter
             });
 
+            const outcomeAfterUserMove = await this._checkAndReportGameEnd(fenAfter, "after_user_move");
+            if (outcomeAfterUserMove) {
+                return;
+            }
+
             if (this.autoOpponent) {
                 await this._autoOpponentMove();
             }
@@ -204,7 +209,7 @@ export default class GameController {
     }
 
     async search(options = {}) {
-        const { depth = 4, timeMs = 0, ttMb = 128, fen = null, debugRootEval = false } = options || {};
+        const { depth = 4, timeMs = 0, ttMb = 128, fen = null, debugRootEval = false, forceDisableBook = false } = options || {};
         const targetFen = fen ?? this.currentFen ?? this.baseFen;
         if (!targetFen) {
             console.warn("search: keine FEN vorhanden");
@@ -247,7 +252,7 @@ export default class GameController {
             }
             history = historyList.join("\n");
 
-            if (this.baseFen === getStartFen()) {
+            if (!forceDisableBook && this.baseFen === getStartFen()) {
                 const expectedPly = this._getFenPlyCount(this.currentFen);
                 const moveCount = this.moveList && Number.isFinite(this.moveList.index)
                     ? Math.max(0, this.moveList.index + 1)
@@ -337,22 +342,7 @@ export default class GameController {
         if (!bestUci) {
             const outcome = this._inferNoBestMoveOutcome(result, fenBefore);
             if (outcome) {
-                const logPayload = {
-                    reason: outcome.reason,
-                    winner: outcome.winner,
-                    sideToMove: outcome.sideToMove,
-                    score: outcome.score
-                };
-                if (outcome.reason === "checkmate") {
-                    console.info(`autoOpponent: ${outcome.message}`, logPayload);
-                } else if (outcome.reason === "stalemate") {
-                    console.info(`autoOpponent: ${outcome.message}`, logPayload);
-                } else {
-                    console.warn(`autoOpponent: ${outcome.message}`, logPayload, result);
-                }
-                if (this.onGameEnd && outcome.reason !== "unknown") {
-                    this.onGameEnd(outcome);
-                }
+                this._reportOutcome(outcome, result, "auto_opponent_no_best");
             } else {
                 console.warn("autoOpponent: no best move found", result);
             }
@@ -434,6 +424,12 @@ export default class GameController {
         return side === "w" ? "White" : side === "b" ? "Black" : "Unknown";
     }
 
+    _oppositeColor(side) {
+        if (side === "w") return "b";
+        if (side === "b") return "w";
+        return null;
+    }
+
     _inferNoBestMoveOutcome(result, fenBefore) {
         const r = this._unwrapSearchResult(result);
         const sideToMove = this._getSideToMove(fenBefore);
@@ -442,7 +438,7 @@ export default class GameController {
         const MATE_SCORE_THRESHOLD = 29990;
 
         if (hasScore && sideToMove && score <= -MATE_SCORE_THRESHOLD) {
-            const winner = sideToMove === "w" ? "b" : "w";
+            const winner = this._oppositeColor(sideToMove);
             return {
                 reason: "checkmate",
                 winner,
@@ -462,6 +458,17 @@ export default class GameController {
             };
         }
 
+        if (hasScore && sideToMove && score !== 0) {
+            const winner = score > 0 ? sideToMove : this._oppositeColor(sideToMove);
+            return {
+                reason: "score_decisive",
+                winner,
+                sideToMove,
+                score,
+                message: `${this._colorName(winner)} has won (score ${score}).`
+            };
+        }
+
         return {
             reason: "unknown",
             winner: null,
@@ -469,6 +476,52 @@ export default class GameController {
             score: hasScore ? score : null,
             message: "no best move found (unable to classify end state)"
         };
+    }
+
+    _reportOutcome(outcome, result = null, context = "game_end") {
+        if (!outcome || typeof outcome !== "object") return;
+        const logPayload = {
+            context,
+            reason: outcome.reason,
+            winner: outcome.winner,
+            sideToMove: outcome.sideToMove,
+            score: outcome.score
+        };
+        if (outcome.reason === "unknown") {
+            console.warn(`game end: ${outcome.message}`, logPayload, result);
+            return;
+        }
+        console.log(`game end: ${outcome.message}`, logPayload);
+        if (this.onGameEnd) {
+            this.onGameEnd(outcome);
+        }
+    }
+
+    async _checkAndReportGameEnd(fen, context = "state_probe") {
+        const targetFen = typeof fen === "string" ? fen : "";
+        if (!targetFen) return null;
+        try {
+            const probe = await this.search({
+                fen: targetFen,
+                depth: 1,
+                timeMs: 0,
+                ttMb: this.engineTtMb,
+                forceDisableBook: true
+            });
+            const bestUci = this._extractBestMove(probe);
+            if (bestUci) {
+                return null;
+            }
+            const outcome = this._inferNoBestMoveOutcome(probe, targetFen);
+            if (!outcome) {
+                return null;
+            }
+            this._reportOutcome(outcome, probe, context);
+            return outcome;
+        } catch (err) {
+            console.warn("game end probe failed:", err);
+            return null;
+        }
     }
 
     _sleep(ms) {
@@ -563,6 +616,8 @@ export default class GameController {
             fenBefore,
             fenAfter
         });
+
+        await this._checkAndReportGameEnd(fenAfter, "after_engine_move");
     }
 
     _buildUciHistory() {

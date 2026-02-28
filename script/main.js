@@ -4,6 +4,7 @@ import ChessBoard from './core/ChessBoard.js';
 import GameController from './core/GameController.js';
 import MoveList from './core/MoveList.js';
 import { lanToField, fieldToLan, fenZuFigurenListe, getStartFen, getPuzzleFen, runPerft } from './utils/utilitys.js';
+import { registerEngineBench } from './utils/engineBench.js';
 
 
 // Hier wird geprüft, ob es sich um ein mobiles Device handelt oder um einen Desktop
@@ -159,6 +160,7 @@ if (mediaUrls != null) {
                 });
                 return p;
             };
+            registerEngineBench(c1);
         });
     });
 }

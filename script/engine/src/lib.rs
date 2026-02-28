@@ -2765,6 +2765,21 @@ fn entry_best_move(entry: TTEntry) -> Option<(u8, u8, Option<char>)> {
     }
 }
 
+#[inline]
+fn tt_cutoff_value(entry: TTEntry, depth: u32, alpha: i32, beta: i32, ply: i32) -> Option<i32> {
+    if (entry.depth as u32) < depth {
+        return None;
+    }
+
+    let val = tt_probe_score(entry.value, ply);
+    match entry.bound {
+        TT_BOUND_EXACT => Some(val),
+        TT_BOUND_LOWER if val >= beta => Some(val),
+        TT_BOUND_UPPER if val <= alpha => Some(val),
+        _ => None,
+    }
+}
+
 struct TTState {
     mb: u32,
     gen: u8,
@@ -2913,20 +2928,8 @@ fn quiescence(
 
     if let Some(table) = tt.as_ref() {
         if let Some(entry) = table.probe(hash) {
-            let val = tt_probe_score(entry.value, ply);
-            match entry.bound {
-                TT_BOUND_EXACT => return val,
-                TT_BOUND_LOWER => {
-                    if val >= beta {
-                        return val;
-                    }
-                }
-                TT_BOUND_UPPER => {
-                    if val <= alpha {
-                        return val;
-                    }
-                }
-                _ => {}
+            if let Some(val) = tt_cutoff_value(entry, 0, alpha, beta, ply) {
+                return val;
             }
         }
     }
@@ -3032,41 +3035,8 @@ fn negamax(
         }
     };
     if let Some(entry) = tt_entry {
-        if entry.depth as u32 >= depth {
-            let val = tt_probe_score(entry.value, ply);
-            match entry.bound {
-                TT_BOUND_EXACT => return val,
-                TT_BOUND_LOWER => {
-                    if val >= beta {
-                        return val;
-                    }
-                }
-                TT_BOUND_UPPER => {
-                    if val <= alpha {
-                        return val;
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
-    if let Some(entry) = tt_entry {
-        if entry.depth as u32 >= depth {
-            let val = tt_probe_score(entry.value, ply);
-            match entry.bound {
-                TT_BOUND_EXACT => return val,
-                TT_BOUND_LOWER => {
-                    if val >= beta {
-                        return val;
-                    }
-                }
-                TT_BOUND_UPPER => {
-                    if val <= alpha {
-                        return val;
-                    }
-                }
-                _ => {}
-            }
+        if let Some(val) = tt_cutoff_value(entry, depth, alpha, beta, ply) {
+            return val;
         }
     }
 
