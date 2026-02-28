@@ -1,5 +1,4 @@
 use wasm_bindgen::prelude::*;
-use std::collections::HashMap;
 use std::mem::size_of;
 use std::cell::{Cell, RefCell};
 
@@ -2333,6 +2332,154 @@ fn move_key(mv: Move, promo: Option<char>) -> (u8, u8, u8) {
     (mv.from, mv.to, encode_promo(promo))
 }
 
+#[inline]
+fn see_piece_value(piece: char) -> i32 {
+    match piece.to_ascii_lowercase() {
+        'p' => 100,
+        'n' => 320,
+        'b' => 330,
+        'r' => 500,
+        'q' => 900,
+        'k' => 20_000,
+        _ => 0,
+    }
+}
+
+#[inline]
+fn pawn_attackers_to(sq: u8, side: Color) -> u64 {
+    let target = bb(sq);
+    match side {
+        Color::White => ((target & !FILE_A) >> 9) | ((target & !FILE_H) >> 7),
+        Color::Black => ((target & !FILE_H) << 9) | ((target & !FILE_A) << 7),
+    }
+}
+
+#[inline]
+fn attackers_to_square(pos: &Position, sq: u8, occ: u64, side: Color) -> u64 {
+    let (pawns, knights, bishops, rooks, queens, king) = match side {
+        Color::White => (pos.bb.wp, pos.bb.wn, pos.bb.wb, pos.bb.wr, pos.bb.wq, pos.bb.wk),
+        Color::Black => (pos.bb.bp, pos.bb.bn, pos.bb.bb, pos.bb.br, pos.bb.bq, pos.bb.bk),
+    };
+
+    let mut attackers = 0u64;
+    attackers |= pawn_attackers_to(sq, side) & pawns;
+    attackers |= KNIGHT_ATTACKS[sq as usize] & knights;
+    attackers |= bishop_attacks(sq, occ) & (bishops | queens);
+    attackers |= rook_attacks(sq, occ) & (rooks | queens);
+    attackers |= KING_ATTACKS[sq as usize] & king;
+    attackers
+}
+
+#[inline]
+fn least_valuable_attacker(pos: &Position, sq: u8, occ: u64, side: Color) -> Option<(u8, i32)> {
+    let attackers = attackers_to_square(pos, sq, occ, side);
+    if attackers == 0 {
+        return None;
+    }
+
+    let (pawns, knights, bishops, rooks, queens, kings) = match side {
+        Color::White => (pos.bb.wp, pos.bb.wn, pos.bb.wb, pos.bb.wr, pos.bb.wq, pos.bb.wk),
+        Color::Black => (pos.bb.bp, pos.bb.bn, pos.bb.bb, pos.bb.br, pos.bb.bq, pos.bb.bk),
+    };
+
+    let mut bb_attackers = attackers & pawns & occ;
+    if bb_attackers != 0 {
+        let sq = pop_lsb(&mut bb_attackers);
+        return Some((sq, see_piece_value('p')));
+    }
+    bb_attackers = attackers & knights & occ;
+    if bb_attackers != 0 {
+        let sq = pop_lsb(&mut bb_attackers);
+        return Some((sq, see_piece_value('n')));
+    }
+    bb_attackers = attackers & bishops & occ;
+    if bb_attackers != 0 {
+        let sq = pop_lsb(&mut bb_attackers);
+        return Some((sq, see_piece_value('b')));
+    }
+    bb_attackers = attackers & rooks & occ;
+    if bb_attackers != 0 {
+        let sq = pop_lsb(&mut bb_attackers);
+        return Some((sq, see_piece_value('r')));
+    }
+    bb_attackers = attackers & queens & occ;
+    if bb_attackers != 0 {
+        let sq = pop_lsb(&mut bb_attackers);
+        return Some((sq, see_piece_value('q')));
+    }
+    bb_attackers = attackers & kings & occ;
+    if bb_attackers != 0 {
+        let sq = pop_lsb(&mut bb_attackers);
+        return Some((sq, see_piece_value('k')));
+    }
+
+    None
+}
+
+fn see(pos: &Position, mv: Move, promo: Option<char>) -> i32 {
+    let from = mv.from;
+    let to = mv.to;
+    let Some(moved_piece) = pos.board[from as usize] else {
+        return 0;
+    };
+
+    let captured = capture_info(pos, mv);
+    let mut gain = [0i32; 32];
+    let captured_value = captured.map(|(_, p)| see_piece_value(p)).unwrap_or(0);
+    let promoted_piece = if matches!(mv.kind, MoveKind::Promotion) {
+        match promo.map(|c| c.to_ascii_lowercase()) {
+            Some('q') => 'q',
+            Some('r') => 'r',
+            Some('b') => 'b',
+            Some('n') => 'n',
+            _ => 'q',
+        }
+    } else {
+        moved_piece.to_ascii_lowercase()
+    };
+    let promotion_gain = if matches!(mv.kind, MoveKind::Promotion) {
+        see_piece_value(promoted_piece) - see_piece_value('p')
+    } else {
+        0
+    };
+    gain[0] = captured_value + promotion_gain;
+
+    let mut occ = pos.bb.occ;
+    occ &= !bb(from);
+    if let (MoveKind::EnPassant, Some((cap_sq, _))) = (mv.kind, captured) {
+        occ &= !bb(cap_sq);
+    }
+    occ |= bb(to);
+
+    let mut side = pos.side_to_move.opposite();
+    let mut last_piece_value = see_piece_value(promoted_piece);
+    let mut depth = 0usize;
+
+    loop {
+        let Some((attacker_sq, attacker_val)) = least_valuable_attacker(pos, to, occ, side) else {
+            break;
+        };
+        depth += 1;
+        if depth >= gain.len() {
+            break;
+        }
+        gain[depth] = last_piece_value - gain[depth - 1];
+        if gain[depth].max(-gain[depth - 1]) < 0 {
+            break;
+        }
+        occ &= !bb(attacker_sq);
+        side = side.opposite();
+        last_piece_value = attacker_val;
+    }
+
+    while depth > 0 {
+        depth -= 1;
+        gain[depth] = -std::cmp::max(-gain[depth], gain[depth + 1]);
+    }
+
+    gain[0]
+}
+
 fn is_quiet_move(pos: &Position, mv: Move, promo: Option<char>) -> bool {
     if let MoveKind::Promotion = mv.kind {
         return false;
@@ -2365,6 +2512,32 @@ fn update_history_heur(ctx: &mut SearchContext, color: Color, from: u8, to: u8, 
     *entry = entry.saturating_add(inc);
 }
 
+#[inline]
+fn has_non_pawn_material(pos: &Position, color: Color) -> bool {
+    match color {
+        Color::White => (pos.bb.wn | pos.bb.wb | pos.bb.wr | pos.bb.wq) != 0,
+        Color::Black => (pos.bb.bn | pos.bb.bb | pos.bb.br | pos.bb.bq) != 0,
+    }
+}
+
+#[inline]
+fn lmr_reduction(depth: u32, move_index: usize) -> u32 {
+    let mut r = 1u32;
+    if depth >= 5 && move_index > 4 {
+        r += 1;
+    }
+    if depth >= 8 && move_index > 8 {
+        r += 1;
+    }
+    if depth >= 12 && move_index > 16 {
+        r += 1;
+    }
+    if depth >= 16 && move_index > 24 {
+        r += 1;
+    }
+    r.min(depth.saturating_sub(1))
+}
+
 struct MoveOrderScratch {
     captures: Vec<(i32, Move, Option<char>)>,
     quiet: Vec<(i32, Move, Option<char>)>,
@@ -2392,7 +2565,12 @@ fn capture_score(pos: &Position, mv: Move, promo: Option<char>) -> i32 {
         let mover = pos.board[mv.from as usize].unwrap_or('P');
         score += 3000 + piece_value(cap) - piece_value(mover);
     }
-    score
+    let see_gain = see(pos, mv, promo);
+    if see_gain >= 0 {
+        20_000 + score + see_gain
+    } else {
+        score + see_gain - 4_000
+    }
 }
 
 fn order_moves_in_place(
@@ -2830,7 +3008,6 @@ struct SearchContext {
     stop: bool,
     tt_gen: u8,
     history: Vec<u64>,
-    rep_counts: HashMap<u64, u8>,
     killers: Vec<[Option<(u8, u8, u8)>; 2]>,
     history_heur: [[[i32; 64]; 64]; 2],
     move_buf: Vec<Vec<(Move, Option<char>)>>,
@@ -2838,28 +3015,41 @@ struct SearchContext {
 }
 
 #[inline]
-fn history_count(ctx: &SearchContext, hash: u64) -> u8 {
-    ctx.rep_counts.get(&hash).copied().unwrap_or(0)
+fn history_count(ctx: &SearchContext, hash: u64, halfmove: u32) -> u8 {
+    let len = ctx.history.len();
+    if len == 0 {
+        return 0;
+    }
+    let max_back = (halfmove as usize).min(len.saturating_sub(1));
+    let mut count = 0u8;
+    let mut idx = len - 1;
+    let mut back = 0usize;
+
+    loop {
+        if ctx.history[idx] == hash {
+            count = count.saturating_add(1);
+            if count >= 3 {
+                return count;
+            }
+        }
+        if back + 2 > max_back || idx < 2 {
+            break;
+        }
+        idx -= 2;
+        back += 2;
+    }
+
+    count
 }
 
 #[inline]
 fn history_push(ctx: &mut SearchContext, hash: u64) {
     ctx.history.push(hash);
-    let entry = ctx.rep_counts.entry(hash).or_insert(0);
-    *entry = entry.saturating_add(1);
 }
 
 #[inline]
 fn history_pop(ctx: &mut SearchContext) {
-    if let Some(h) = ctx.history.pop() {
-        if let Some(c) = ctx.rep_counts.get_mut(&h) {
-            if *c > 1 {
-                *c -= 1;
-            } else {
-                ctx.rep_counts.remove(&h);
-            }
-        }
-    }
+    let _ = ctx.history.pop();
 }
 
 #[inline]
@@ -2917,7 +3107,7 @@ fn quiescence(
     if pos.halfmove >= 100 {
         return 0;
     }
-    if history_count(ctx, hash) >= 3 {
+    if history_count(ctx, hash, pos.halfmove) >= 3 {
         return 0;
     }
 
@@ -2934,35 +3124,23 @@ fn quiescence(
         }
     }
 
-    let stand_pat = clamp_eval(evaluate_fast(pos));
-    if stand_pat >= beta {
-        return beta;
-    }
-    if stand_pat > alpha {
-        alpha = stand_pat;
+    let in_check = is_in_check(pos, pos.side_to_move);
+    let mut stand_pat = -INF_SCORE;
+    if !in_check {
+        stand_pat = clamp_eval(evaluate_fast(pos));
+        if stand_pat >= beta {
+            return beta;
+        }
+        if stand_pat > alpha {
+            alpha = stand_pat;
+        }
     }
 
-    let in_check = is_in_check(pos, pos.side_to_move);
     let mut moves = take_move_buf(ctx, ply);
     if in_check {
         generate_legal_moves_into(pos, &mut moves);
     } else {
         generate_tactical_moves_into(pos, &mut moves);
-        // Optional: auch ruhige Schachs hinzufügen (wichtig für Mattnetze).
-        let mut extra = take_move_buf(ctx, ply + 1);
-        generate_legal_moves_into(pos, &mut extra);
-        for (mv, promo) in extra.iter().copied() {
-            if !is_quiet_move(pos, mv, promo) {
-                continue;
-            }
-            let Some(undo) = make_move_in_place(pos, mv, promo) else { continue; };
-            let gives_check = is_in_check(pos, pos.side_to_move);
-            unmake_move_in_place(pos, mv, promo, undo);
-            if gives_check {
-                moves.push((mv, promo));
-            }
-        }
-        restore_move_buf(ctx, ply + 1, extra);
     }
 
     if moves.is_empty() {
@@ -2975,9 +3153,18 @@ fn quiescence(
     }
 
     order_moves_in_place(pos, &mut moves, None, None, None, Some(&ctx.history_heur), &mut ctx.order_scratch);
+    const QS_SEE_PRUNE_MARGIN: i32 = 80;
     for (mv, promo) in moves.iter().copied() {
         if ctx.stop {
             break;
+        }
+        if !in_check
+            && move_is_capture(pos, mv)
+            && !matches!(mv.kind, MoveKind::Promotion)
+            && promo.is_none()
+            && see(pos, mv, promo) < -QS_SEE_PRUNE_MARGIN
+        {
+            continue;
         }
         let Some(undo) = make_move_in_place(pos, mv, promo) else { continue; };
         let next_hash = update_hash_after_move(hash, zob, &undo, pos, mv);
@@ -3018,7 +3205,7 @@ fn negamax(
     if pos.halfmove >= 100 {
         return 0;
     }
-    if history_count(ctx, hash) >= 3 {
+    if history_count(ctx, hash, pos.halfmove) >= 3 {
         return 0;
     }
 
@@ -3045,6 +3232,53 @@ fn negamax(
     }
 
     let in_check = is_in_check(pos, pos.side_to_move);
+    let is_pv = alpha.saturating_add(1) < beta;
+
+    if depth >= 3
+        && !is_pv
+        && !in_check
+        && ply > 0
+        && has_non_pawn_material(pos, pos.side_to_move)
+        && beta.abs() < MATE_THRESHOLD
+    {
+        let null_reduction = if depth >= 8 { 3 } else { 2 };
+        let null_depth = depth.saturating_sub(1 + null_reduction);
+        let prev_side = pos.side_to_move;
+        let prev_ep = pos.ep;
+        let prev_halfmove = pos.halfmove;
+        let prev_fullmove = pos.fullmove;
+
+        pos.side_to_move = prev_side.opposite();
+        pos.ep = None;
+        pos.halfmove = pos.halfmove.saturating_add(1);
+        if prev_side == Color::Black {
+            pos.fullmove = pos.fullmove.saturating_add(1);
+        }
+
+        let mut null_hash = hash ^ zob.side;
+        if let Some(ep) = prev_ep {
+            let file = (ep % 8) as usize;
+            null_hash ^= zob.ep_file[file + 1];
+        }
+
+        history_push(ctx, null_hash);
+        let zw_alpha = -beta;
+        let zw_beta = zw_alpha.saturating_add(1);
+        let score = -negamax(pos, null_depth, zw_alpha, zw_beta, ctx, tt, zob, null_hash, ply + 1);
+        history_pop(ctx);
+
+        pos.side_to_move = prev_side;
+        pos.ep = prev_ep;
+        pos.halfmove = prev_halfmove;
+        pos.fullmove = prev_fullmove;
+
+        if ctx.stop {
+            return 0;
+        }
+        if score >= beta {
+            return beta;
+        }
+    }
 
     let mut moves = take_move_buf(ctx, ply);
     generate_legal_moves_into(pos, &mut moves);
@@ -3080,7 +3314,7 @@ fn negamax(
         let use_lmr = !first
             && ply > 0
             && base_depth >= 3
-            && move_index > 3
+            && move_index > 2
             && is_quiet
             && !in_check
             && !gives_check;
@@ -3089,7 +3323,7 @@ fn negamax(
             -negamax(pos, base_depth, -beta, -alpha, ctx, tt, zob, next_hash, ply + 1)
         } else if use_lmr {
             let narrow = alpha.saturating_add(1);
-            let reduced_depth = base_depth.saturating_sub(1);
+            let reduced_depth = base_depth.saturating_sub(lmr_reduction(base_depth, move_index));
             let mut sc = -negamax(pos, reduced_depth, -narrow, -alpha, ctx, tt, zob, next_hash, ply + 1);
             if sc > alpha {
                 sc = -negamax(pos, base_depth, -narrow, -alpha, ctx, tt, zob, next_hash, ply + 1);
@@ -3208,9 +3442,8 @@ fn search_depth(
         }
         let Some(undo) = make_move_in_place(pos, mv, promo) else { continue; };
         let next_hash = update_hash_after_move(hash, zob, &undo, pos, mv);
-        let rep_count = history_count(ctx, next_hash) as usize;
-        let is_rep_draw = rep_count >= 2;
         history_push(ctx, next_hash);
+        let is_rep_draw = history_count(ctx, next_hash, pos.halfmove) >= 3;
         let score = if first {
             -negamax(pos, depth - 1, -beta, -alpha, ctx, tt, zob, next_hash, 1)
         } else {
@@ -3397,11 +3630,6 @@ fn search_impl(fen: &str, depth: u32, time_ms: u32, tt_mb: u32, history: &str) -
             time_limit_ms.min(250.0)
         };
         let history = build_history(history, &zob, root_hash);
-        let mut rep_counts: HashMap<u64, u8> = HashMap::new();
-        for h in history.iter() {
-            let entry = rep_counts.entry(*h).or_insert(0);
-            *entry = entry.saturating_add(1);
-        }
         let move_buf = Vec::with_capacity(max_ply);
         let mut ctx = SearchContext {
             nodes: 0,
@@ -3412,7 +3640,6 @@ fn search_impl(fen: &str, depth: u32, time_ms: u32, tt_mb: u32, history: &str) -
             stop: false,
             tt_gen,
             history,
-            rep_counts,
             killers,
             history_heur,
             move_buf,

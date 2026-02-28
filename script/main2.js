@@ -93,7 +93,7 @@ if (mediaUrls != null) {
             // Worker zum Berechnen der erlaubten Züge
             const b1 = new ChessBoard("#b1", mediaMemory, device, {
                 interactive: true, 
-                ownColorOnly: false, 
+                ownColorOnly: true, 
                 showLegalMoves: false, 
                 showSelectedField: true,
                 showMoves: true, 
