@@ -43,10 +43,10 @@ if (mediaUrls != null) {
         const timebar = document.querySelector(".timebar");
         const timebarFill = timebar?.querySelector(".timebar-fill");
 
-        const engineTimer = (() => {
-            let rafId = 0;
-            let start = 0;
-            let duration = 0;
+            const engineTimer = (() => {
+                let rafId = 0;
+                let start = 0;
+                let duration = 0;
 
             const tick = () => {
                 const now = performance.now();
@@ -63,25 +63,29 @@ if (mediaUrls != null) {
                 }
             };
 
-            return {
-                start(durationMs) {
-                    if (!timebar || !timebarFill) return;
-                    if (rafId) cancelAnimationFrame(rafId);
-                    duration = Math.max(0, Number(durationMs) || 0);
-                    start = performance.now();
-                    timebar.classList.remove("is-idle");
-                    timebarFill.style.width = "100%";
-                    rafId = requestAnimationFrame(tick);
-                },
-                stop(remainingMs, durationMs) {
-                    if (!timebar || !timebarFill) return;
-                    if (rafId) cancelAnimationFrame(rafId);
-                    rafId = 0;
-                    if (Number.isFinite(remainingMs) && Number.isFinite(durationMs) && durationMs > 0) {
-                        const ratio = Math.max(0, Math.min(1, remainingMs / durationMs));
-                        timebarFill.style.width = `${ratio * 100}%`;
-                    }
-                    timebar.classList.add("is-idle");
+                return {
+                    start(durationMs) {
+                        if (!timebar || !timebarFill) return;
+                        if (rafId) cancelAnimationFrame(rafId);
+                        timebarFill.style.transition = "";
+                        duration = Math.max(0, Number(durationMs) || 0);
+                        start = performance.now();
+                        timebar.classList.remove("is-idle");
+                        timebarFill.style.width = "100%";
+                        rafId = requestAnimationFrame(tick);
+                    },
+                    stop(remainingMs, durationMs, hard = false) {
+                        if (!timebar || !timebarFill) return;
+                        if (rafId) cancelAnimationFrame(rafId);
+                        rafId = 0;
+                        if (hard) {
+                            timebarFill.style.transition = "none";
+                        }
+                        if (Number.isFinite(remainingMs) && Number.isFinite(durationMs) && durationMs > 0) {
+                            const ratio = Math.max(0, Math.min(1, remainingMs / durationMs));
+                            timebarFill.style.width = `${ratio * 100}%`;
+                        }
+                        timebar.classList.add("is-idle");
                 }
             };
         })();
@@ -115,7 +119,8 @@ if (mediaUrls != null) {
                 bookPauseMs: BOOK_PAUSE_MS,
                 autoOpponent: true,
                 onEngineThinkStart: ({ durationMs }) => engineTimer.start(durationMs),
-                onEngineThinkEnd: ({ remainingMs, durationMs }) => engineTimer.stop(remainingMs, durationMs)
+                onEngineThinkEnd: ({ remainingMs, durationMs }) => engineTimer.stop(remainingMs, durationMs),
+                onGameEnd: () => engineTimer.stop(0, 1, true)
             });
 
 //            getPuzzleFen().then((x)=> c1.initPosition(x));

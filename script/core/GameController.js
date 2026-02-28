@@ -142,6 +142,11 @@ export default class GameController {
                 fenAfter
             });
 
+            const gameEnded = await this._maybeReportGameEnd(this.currentFen, "after_user_move");
+            if (gameEnded) {
+                return;
+            }
+
             if (this.autoOpponent) {
                 await this._autoOpponentMove();
             }
@@ -585,6 +590,80 @@ export default class GameController {
             fenAfter
         });
 
+        await this._maybeReportGameEnd(this.currentFen, "after_engine_move");
+
+    }
+
+    async _maybeReportGameEnd(fen, context = "game_end_probe") {
+        const hasLegalMove = await this._hasAnyLegalMove(fen);
+        if (hasLegalMove !== false) {
+            return false;
+        }
+
+        let result = null;
+        try {
+            result = await this.search({
+                fen,
+                depth: 1,
+                timeMs: 0,
+                ttMb: 0
+            });
+        } catch (err) {
+            console.error("game end probe: search failed:", err);
+        }
+
+        const outcome = this._inferNoBestMoveOutcome(result, fen);
+        if (outcome) {
+            this._reportOutcome(outcome, result, context);
+            return true;
+        }
+        return false;
+    }
+
+    async _hasAnyLegalMove(fen) {
+        const sideToMove = this._getSideToMove(fen);
+        if (!sideToMove) return null;
+
+        const fields = this._getPieceFieldsForSide(fen, sideToMove);
+        for (const from of fields) {
+            const moves = await this.engine.getValidMoves(fen, from);
+            if (Array.isArray(moves) && moves.length > 0) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    _getPieceFieldsForSide(fen, side) {
+        if (!fen || typeof fen !== "string") return [];
+        if (side !== "w" && side !== "b") return [];
+
+        const boardPart = fen.trim().split(/\s+/)[0] || "";
+        const ranks = boardPart.split("/");
+        if (ranks.length !== 8) return [];
+
+        const wantWhite = side === "w";
+        const fields = [];
+        let rank = 7;
+
+        for (const rankPart of ranks) {
+            let file = 0;
+            for (const ch of rankPart) {
+                if (ch >= "1" && ch <= "8") {
+                    file += Number(ch);
+                    continue;
+                }
+
+                const isWhitePiece = ch >= "A" && ch <= "Z";
+                if ((wantWhite && isWhitePiece) || (!wantWhite && !isWhitePiece)) {
+                    fields.push(rank * 8 + file);
+                }
+                file += 1;
+            }
+            rank -= 1;
+        }
+
+        return fields;
     }
 
     _buildUciHistory() {
