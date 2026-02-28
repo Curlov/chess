@@ -95,8 +95,6 @@ export default class ValidMovesEngine {
     }
 
     getValidMoves(fen, field) {
-        console.log("ValidMovesEngine.getValidMoves:", { fen, field });
-
         if (!this.worker) {
             return Promise.reject(new Error("Worker nicht initialisiert"));
         }

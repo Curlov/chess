@@ -3419,14 +3419,12 @@ fn search_impl(fen: &str, depth: u32, time_ms: u32, tt_mb: u32, history: &str) -
         let history_heur = state.history_heur;
 
         let start_ms = now_ms();
+        // Zeitlimit häufiger prüfen, damit UI-Timer und Engine-Ende nicht stark auseinanderlaufen.
+        // Vorher: bei langen Suchen bis zu 2000ms Prüfintervall -> sichtbar "leere Timebar, aber kein Zug".
         let time_check_interval_ms = if time_limit_ms <= 0.0 {
             0.0
-        } else if time_limit_ms < 1000.0 {
-            time_limit_ms
-        } else if time_limit_ms < 2000.0 {
-            1000.0
         } else {
-            2000.0
+            time_limit_ms.min(250.0)
         };
         let history = build_history(history, &zob, root_hash);
         let mut rep_counts: HashMap<u64, u8> = HashMap::new();

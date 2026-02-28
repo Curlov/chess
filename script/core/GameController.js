@@ -23,7 +23,8 @@ export default class GameController {
             autoOpponent = true,
             bookPauseMs = 3000,
             onEngineThinkStart = null,
-            onEngineThinkEnd = null
+            onEngineThinkEnd = null,
+            onGameEnd = null
         } = options || {};
 
         this.engineTimeMs = engineTimeMs;
@@ -33,6 +34,7 @@ export default class GameController {
         this.bookPauseMs = bookPauseMs;
         this.onEngineThinkStart = typeof onEngineThinkStart === "function" ? onEngineThinkStart : null;
         this.onEngineThinkEnd = typeof onEngineThinkEnd === "function" ? onEngineThinkEnd : null;
+        this.onGameEnd = typeof onGameEnd === "function" ? onGameEnd : null;
 
         this.board.onUserMove = (from, to, capturedPiece) => {
             this.handleUserMove(from, to, capturedPiece);
@@ -151,10 +153,9 @@ export default class GameController {
 
     async handleMoveStart(field, figure, color, fromSelection) {
         try {
-            console.log("Bin im handleMoveStart", { field, figure, color });
-
+            
             const moves = await this.engine.getValidMoves(this.currentFen, field);
-            console.log("moves:", moves);
+            console.log("possible moves:", moves);
 
             if (!Array.isArray(moves)) return;
 
@@ -312,6 +313,14 @@ export default class GameController {
             return;
         }
 
+        const minThinkMs = Math.max(0, Number(this.engineMinTimeMs) || 0);
+        if (minThinkMs > 0) {
+            const elapsedBeforeMove = performance.now() - thinkStart;
+            if (elapsedBeforeMove < minThinkMs) {
+                await this._sleep(minThinkMs - elapsedBeforeMove);
+            }
+        }
+
         if (this.onEngineThinkEnd) {
             const elapsedMs = performance.now() - thinkStart;
             const remainingMs = Math.max(0, Number(this.engineTimeMs) - elapsedMs);
@@ -326,7 +335,27 @@ export default class GameController {
 
         const bestUci = this._extractBestMove(result);
         if (!bestUci) {
-            console.warn("autoOpponent: no best move found", result);
+            const outcome = this._inferNoBestMoveOutcome(result, fenBefore);
+            if (outcome) {
+                const logPayload = {
+                    reason: outcome.reason,
+                    winner: outcome.winner,
+                    sideToMove: outcome.sideToMove,
+                    score: outcome.score
+                };
+                if (outcome.reason === "checkmate") {
+                    console.info(`autoOpponent: ${outcome.message}`, logPayload);
+                } else if (outcome.reason === "stalemate") {
+                    console.info(`autoOpponent: ${outcome.message}`, logPayload);
+                } else {
+                    console.warn(`autoOpponent: ${outcome.message}`, logPayload, result);
+                }
+                if (this.onGameEnd && outcome.reason !== "unknown") {
+                    this.onGameEnd(outcome);
+                }
+            } else {
+                console.warn("autoOpponent: no best move found", result);
+            }
             return;
         }
 
@@ -337,14 +366,6 @@ export default class GameController {
             await this._sleep(this.bookPauseMs);
             if (this.onEngineThinkEnd) {
                 this.onEngineThinkEnd({ durationMs: this.bookPauseMs, elapsedMs: this.bookPauseMs, remainingMs: 0 });
-            }
-        }
-
-        const minThinkMs = Math.max(0, Number(this.engineMinTimeMs) || 0);
-        if (minThinkMs > 0) {
-            const elapsedBeforeMove = performance.now() - thinkStart;
-            if (elapsedBeforeMove < minThinkMs) {
-                await this._sleep(minThinkMs - elapsedBeforeMove);
             }
         }
 
@@ -399,6 +420,55 @@ export default class GameController {
         if (result.book === true) return true;
         if (result.result && typeof result.result === "object" && result.result.book === true) return true;
         return false;
+    }
+
+    _unwrapSearchResult(result) {
+        if (!result || typeof result !== "object") return null;
+        if (result.result && typeof result.result === "object") {
+            return result.result;
+        }
+        return result;
+    }
+
+    _colorName(side) {
+        return side === "w" ? "White" : side === "b" ? "Black" : "Unknown";
+    }
+
+    _inferNoBestMoveOutcome(result, fenBefore) {
+        const r = this._unwrapSearchResult(result);
+        const sideToMove = this._getSideToMove(fenBefore);
+        const score = Number(r?.score);
+        const hasScore = Number.isFinite(score);
+        const MATE_SCORE_THRESHOLD = 29990;
+
+        if (hasScore && sideToMove && score <= -MATE_SCORE_THRESHOLD) {
+            const winner = sideToMove === "w" ? "b" : "w";
+            return {
+                reason: "checkmate",
+                winner,
+                sideToMove,
+                score,
+                message: `${this._colorName(winner)} has won (checkmate).`
+            };
+        }
+
+        if (hasScore && score === 0) {
+            return {
+                reason: "stalemate",
+                winner: null,
+                sideToMove,
+                score,
+                message: "Draw (stalemate)."
+            };
+        }
+
+        return {
+            reason: "unknown",
+            winner: null,
+            sideToMove,
+            score: hasScore ? score : null,
+            message: "no best move found (unable to classify end state)"
+        };
     }
 
     _sleep(ms) {
