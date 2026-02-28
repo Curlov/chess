@@ -142,11 +142,6 @@ export default class GameController {
                 fenAfter
             });
 
-            const outcomeAfterUserMove = await this._checkAndReportGameEnd(fenAfter, "after_user_move");
-            if (outcomeAfterUserMove) {
-                return;
-            }
-
             if (this.autoOpponent) {
                 await this._autoOpponentMove();
             }
@@ -209,7 +204,7 @@ export default class GameController {
     }
 
     async search(options = {}) {
-        const { depth = 4, timeMs = 0, ttMb = 128, fen = null, debugRootEval = false, forceDisableBook = false } = options || {};
+        const { depth = 4, timeMs = 0, ttMb = 128, fen = null, debugRootEval = false } = options || {};
         const targetFen = fen ?? this.currentFen ?? this.baseFen;
         if (!targetFen) {
             console.warn("search: keine FEN vorhanden");
@@ -252,7 +247,7 @@ export default class GameController {
             }
             history = historyList.join("\n");
 
-            if (!forceDisableBook && this.baseFen === getStartFen()) {
+            if (this.baseFen === getStartFen()) {
                 const expectedPly = this._getFenPlyCount(this.currentFen);
                 const moveCount = this.moveList && Number.isFinite(this.moveList.index)
                     ? Math.max(0, this.moveList.index + 1)
@@ -497,33 +492,6 @@ export default class GameController {
         }
     }
 
-    async _checkAndReportGameEnd(fen, context = "state_probe") {
-        const targetFen = typeof fen === "string" ? fen : "";
-        if (!targetFen) return null;
-        try {
-            const probe = await this.search({
-                fen: targetFen,
-                depth: 1,
-                timeMs: 0,
-                ttMb: this.engineTtMb,
-                forceDisableBook: true
-            });
-            const bestUci = this._extractBestMove(probe);
-            if (bestUci) {
-                return null;
-            }
-            const outcome = this._inferNoBestMoveOutcome(probe, targetFen);
-            if (!outcome) {
-                return null;
-            }
-            this._reportOutcome(outcome, probe, context);
-            return outcome;
-        } catch (err) {
-            console.warn("game end probe failed:", err);
-            return null;
-        }
-    }
-
     _sleep(ms) {
         return new Promise((resolve) => {
             setTimeout(resolve, Math.max(0, Number(ms) || 0));
@@ -617,7 +585,6 @@ export default class GameController {
             fenAfter
         });
 
-        await this._checkAndReportGameEnd(fenAfter, "after_engine_move");
     }
 
     _buildUciHistory() {

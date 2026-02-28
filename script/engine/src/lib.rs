@@ -2732,6 +2732,10 @@ impl Zobrist {
     }
 }
 
+thread_local! {
+    static ZOBRIST_TABLE: Zobrist = Zobrist::new();
+}
+
 fn piece_index(ch: char) -> Option<usize> {
     match ch {
         'P' => Some(0),
@@ -2964,6 +2968,8 @@ struct TTState {
     table: Option<TT>,
     killers: Vec<[Option<(u8, u8, u8)>; 2]>,
     history_heur: [[[i32; 64]; 64]; 2],
+    history_cache_raw: String,
+    history_cache_hashes: Vec<u64>,
 }
 
 impl TTState {
@@ -2974,6 +2980,8 @@ impl TTState {
             table: None,
             killers: Vec::new(),
             history_heur: [[[0i32; 64]; 64]; 2],
+            history_cache_raw: String::new(),
+            history_cache_hashes: Vec::new(),
         }
     }
 }
@@ -3510,21 +3518,50 @@ fn search_depth(
     (chosen_score, chosen_move, rep_avoid_used)
 }
 
-fn build_history(history: &str, zob: &Zobrist, root_hash: u64) -> Vec<u64> {
-    let mut out = Vec::new();
-    for line in history.lines() {
-        let fen = line.trim();
-        if fen.is_empty() {
-            continue;
+fn build_history_cached(state: &mut TTState, history: &str, zob: &Zobrist, root_hash: u64) -> Vec<u64> {
+    let mut cache_updated = false;
+    if state.history_cache_raw != history {
+        if !state.history_cache_raw.is_empty() && history.starts_with(&state.history_cache_raw) {
+            let mut rest = &history[state.history_cache_raw.len()..];
+            if rest.starts_with('\n') {
+                rest = &rest[1..];
+            }
+            for line in rest.lines() {
+                let fen = line.trim();
+                if fen.is_empty() {
+                    continue;
+                }
+                if let Some(pos) = parse_fen(fen) {
+                    state.history_cache_hashes.push(compute_hash(&pos, zob));
+                }
+            }
+            state.history_cache_raw.clear();
+            state.history_cache_raw.push_str(history);
+            cache_updated = true;
         }
-        if let Some(pos) = parse_fen(fen) {
-            out.push(compute_hash(&pos, zob));
+
+        if !cache_updated {
+            state.history_cache_raw.clear();
+            state.history_cache_raw.push_str(history);
+            state.history_cache_hashes.clear();
+            for line in history.lines() {
+                let fen = line.trim();
+                if fen.is_empty() {
+                    continue;
+                }
+                if let Some(pos) = parse_fen(fen) {
+                    state.history_cache_hashes.push(compute_hash(&pos, zob));
+                }
+            }
         }
     }
-    if out.len() > 128 {
-        let start = out.len() - 128;
-        out = out.split_off(start);
-    }
+
+    let mut out = if state.history_cache_hashes.len() > 128 {
+        let start = state.history_cache_hashes.len() - 128;
+        state.history_cache_hashes[start..].to_vec()
+    } else {
+        state.history_cache_hashes.clone()
+    };
     out.push(root_hash);
     out
 }
@@ -3597,8 +3634,6 @@ fn search_impl(fen: &str, depth: u32, time_ms: u32, tt_mb: u32, history: &str) -
     };
 
     let debug_root = ROOT_EVAL_DEBUG.with(|v| v.get());
-    let zob = Zobrist::new();
-    let root_hash = compute_hash(&pos, &zob);
 
     let time_limit_ms = time_ms as f64;
     let max_depth = if time_ms > 0 {
@@ -3608,169 +3643,172 @@ fn search_impl(fen: &str, depth: u32, time_ms: u32, tt_mb: u32, history: &str) -
     };
     let max_ply = (max_depth as usize).saturating_add(8);
 
-    with_tt_state(tt_mb, max_ply, |state| {
-        state.gen = state.gen.wrapping_add(1);
-        if state.gen == 0 {
-            state.gen = 1;
-        }
-        let tt_gen = state.gen;
+    ZOBRIST_TABLE.with(|zob| {
+        let root_hash = compute_hash(&pos, zob);
+        with_tt_state(tt_mb, max_ply, |state| {
+            state.gen = state.gen.wrapping_add(1);
+            if state.gen == 0 {
+                state.gen = 1;
+            }
+            let tt_gen = state.gen;
 
-        let mut killers = std::mem::take(&mut state.killers);
-        if killers.len() < max_ply {
-            killers.resize(max_ply, [None; 2]);
-        }
-        let history_heur = state.history_heur;
+            let mut killers = std::mem::take(&mut state.killers);
+            if killers.len() < max_ply {
+                killers.resize(max_ply, [None; 2]);
+            }
+            let history_heur = state.history_heur;
 
-        let start_ms = now_ms();
-        // Zeitlimit häufiger prüfen, damit UI-Timer und Engine-Ende nicht stark auseinanderlaufen.
-        // Vorher: bei langen Suchen bis zu 2000ms Prüfintervall -> sichtbar "leere Timebar, aber kein Zug".
-        let time_check_interval_ms = if time_limit_ms <= 0.0 {
-            0.0
-        } else {
-            time_limit_ms.min(250.0)
-        };
-        let history = build_history(history, &zob, root_hash);
-        let move_buf = Vec::with_capacity(max_ply);
-        let mut ctx = SearchContext {
-            nodes: 0,
-            start_ms,
-            time_limit_ms,
-            time_check_interval_ms,
-            last_time_check_ms: start_ms,
-            stop: false,
-            tt_gen,
-            history,
-            killers,
-            history_heur,
-            move_buf,
-            order_scratch: MoveOrderScratch::new(),
-        };
+            let start_ms = now_ms();
+            // Zeitlimit häufiger prüfen, damit UI-Timer und Engine-Ende nicht stark auseinanderlaufen.
+            // Vorher: bei langen Suchen bis zu 2000ms Prüfintervall -> sichtbar "leere Timebar, aber kein Zug".
+            let time_check_interval_ms = if time_limit_ms <= 0.0 {
+                0.0
+            } else {
+                time_limit_ms.min(250.0)
+            };
+            let history = build_history_cached(state, history, zob, root_hash);
+            let move_buf = Vec::with_capacity(max_ply);
+            let mut ctx = SearchContext {
+                nodes: 0,
+                start_ms,
+                time_limit_ms,
+                time_check_interval_ms,
+                last_time_check_ms: start_ms,
+                stop: false,
+                tt_gen,
+                history,
+                killers,
+                history_heur,
+                move_buf,
+                order_scratch: MoveOrderScratch::new(),
+            };
 
-    let mut best_move: Option<(Move, Option<char>)> = None;
-    let mut best_score = 0;
-    let mut completed_depth = 0;
-    let mut rep_avoid_used = false;
-    let mut pv_move_hint: Option<(u8, u8, Option<char>)> = None;
-    let mut last_score = 0;
+            let mut best_move: Option<(Move, Option<char>)> = None;
+            let mut best_score = 0;
+            let mut completed_depth = 0;
+            let mut rep_avoid_used = false;
+            let mut pv_move_hint: Option<(u8, u8, Option<char>)> = None;
+            let mut last_score = 0;
 
-    const USE_ASPIRATION: bool = true;
-    const ASP_WINDOW: i32 = 50;
-    const ASP_MAX_ITERS: u32 = 6;
+            const USE_ASPIRATION: bool = true;
+            const ASP_WINDOW: i32 = 50;
+            const ASP_MAX_ITERS: u32 = 6;
 
-    for d in 1..=max_depth {
-        let mut score = 0;
-        let mut mv: Option<(Move, Option<char>)> = None;
-        let mut rep_avoid = false;
+            for d in 1..=max_depth {
+                let mut score = 0;
+                let mut mv: Option<(Move, Option<char>)> = None;
+                let mut rep_avoid = false;
 
-        if USE_ASPIRATION && d > 1 {
-            let mut window = ASP_WINDOW;
-            let mut alpha = (last_score - window).max(-INF_SCORE);
-            let mut beta = (last_score + window).min(INF_SCORE);
-            let mut attempts = 0;
+                if USE_ASPIRATION && d > 1 {
+                    let mut window = ASP_WINDOW;
+                    let mut alpha = (last_score - window).max(-INF_SCORE);
+                    let mut beta = (last_score + window).min(INF_SCORE);
+                    let mut attempts = 0;
 
-            loop {
-                let (s, m, r) = search_depth(&mut pos, d, &mut ctx, &mut state.table, &zob, root_hash, alpha, beta, pv_move_hint);
-                if ctx.stop {
-                    break;
-                }
-                score = s;
-                mv = m;
-                rep_avoid = r;
+                    loop {
+                        let (s, m, r) = search_depth(&mut pos, d, &mut ctx, &mut state.table, zob, root_hash, alpha, beta, pv_move_hint);
+                        if ctx.stop {
+                            break;
+                        }
+                        score = s;
+                        mv = m;
+                        rep_avoid = r;
 
-                if score <= alpha {
-                    alpha = (alpha - window).max(-INF_SCORE);
-                    window = window.saturating_mul(2);
-                } else if score >= beta {
-                    beta = (beta + window).min(INF_SCORE);
-                    window = window.saturating_mul(2);
+                        if score <= alpha {
+                            alpha = (alpha - window).max(-INF_SCORE);
+                            window = window.saturating_mul(2);
+                        } else if score >= beta {
+                            beta = (beta + window).min(INF_SCORE);
+                            window = window.saturating_mul(2);
+                        } else {
+                            break;
+                        }
+
+                        attempts += 1;
+                        if attempts >= ASP_MAX_ITERS {
+                            alpha = -INF_SCORE;
+                            beta = INF_SCORE;
+                            let (s2, m2, r2) = search_depth(&mut pos, d, &mut ctx, &mut state.table, zob, root_hash, alpha, beta, pv_move_hint);
+                            if ctx.stop {
+                                break;
+                            }
+                            score = s2;
+                            mv = m2;
+                            rep_avoid = r2;
+                            break;
+                        }
+                    }
                 } else {
-                    break;
-                }
-
-                attempts += 1;
-                if attempts >= ASP_MAX_ITERS {
-                    alpha = -INF_SCORE;
-                    beta = INF_SCORE;
-                    let (s2, m2, r2) = search_depth(&mut pos, d, &mut ctx, &mut state.table, &zob, root_hash, alpha, beta, pv_move_hint);
+                    let (s, m, r) = search_depth(&mut pos, d, &mut ctx, &mut state.table, zob, root_hash, -INF_SCORE, INF_SCORE, pv_move_hint);
                     if ctx.stop {
                         break;
                     }
-                    score = s2;
-                    mv = m2;
-                    rep_avoid = r2;
+                    score = s;
+                    mv = m;
+                    rep_avoid = r;
+                }
+
+                if ctx.stop {
+                    break;
+                }
+
+                best_score = score;
+                best_move = mv;
+                completed_depth = d;
+                rep_avoid_used = rep_avoid;
+                last_score = best_score;
+                pv_move_hint = best_move.map(|(mv, promo)| (mv.from, mv.to, promo));
+
+                if best_score >= MATE_SCORE - MATE_EARLY_STOP_PLIES {
+                    break;
+                }
+
+                if time_limit_ms > 0.0 && now_ms() - ctx.start_ms >= time_limit_ms {
                     break;
                 }
             }
-        } else {
-            let (s, m, r) = search_depth(&mut pos, d, &mut ctx, &mut state.table, &zob, root_hash, -INF_SCORE, INF_SCORE, pv_move_hint);
-            if ctx.stop {
-                break;
-            }
-            score = s;
-            mv = m;
-            rep_avoid = r;
-        }
 
-        if ctx.stop {
-            break;
-        }
+            let elapsed_ms = (now_ms() - ctx.start_ms).max(0.0);
+            let nps = if elapsed_ms > 0.0 {
+                (ctx.nodes as f64 * 1000.0 / elapsed_ms) as u64
+            } else {
+                0
+            };
 
-        best_score = score;
-        best_move = mv;
-        completed_depth = d;
-        rep_avoid_used = rep_avoid;
-        last_score = best_score;
-        pv_move_hint = best_move.map(|(mv, promo)| (mv.from, mv.to, promo));
+            let best_str = best_move
+                .map(|(mv, promo)| move_to_uci(mv, promo))
+                .unwrap_or_else(|| "".to_string());
+            let pv_str = if best_str.is_empty() {
+                String::new()
+            } else {
+                let line = build_pv_line(&pos, &state.table, zob, root_hash, completed_depth, best_move);
+                if line.is_empty() { best_str.clone() } else { line }
+            };
+            let root_eval_field = if debug_root {
+                let root_json = root_eval_breakdown_json(&mut pos);
+                format!(",\"root_eval\":{}", root_json)
+            } else {
+                String::new()
+            };
 
-        if best_score >= MATE_SCORE - MATE_EARLY_STOP_PLIES {
-            break;
-        }
+            let mut out = format!(
+                "{{\"depth\":{},\"nodes\":{},\"time_ms\":{},\"nps\":{},\"score\":{},\"best\":\"{}\",\"pv\":\"{}\",\"rep_avoid\":{}}}",
+                completed_depth,
+                ctx.nodes,
+                elapsed_ms as u64,
+                nps,
+                best_score,
+                best_str,
+                pv_str,
+                rep_avoid_used
+            );
+            out.push_str(&root_eval_field);
 
-        if time_limit_ms > 0.0 && now_ms() - ctx.start_ms >= time_limit_ms {
-            break;
-        }
-    }
+            state.killers = ctx.killers;
+            state.history_heur = ctx.history_heur;
 
-    let elapsed_ms = (now_ms() - ctx.start_ms).max(0.0);
-    let nps = if elapsed_ms > 0.0 {
-        (ctx.nodes as f64 * 1000.0 / elapsed_ms) as u64
-    } else {
-        0
-    };
-
-    let best_str = best_move
-        .map(|(mv, promo)| move_to_uci(mv, promo))
-        .unwrap_or_else(|| "".to_string());
-    let pv_str = if best_str.is_empty() {
-        String::new()
-    } else {
-        let line = build_pv_line(&pos, &state.table, &zob, root_hash, completed_depth, best_move);
-        if line.is_empty() { best_str.clone() } else { line }
-    };
-    let root_eval_field = if debug_root {
-        let root_json = root_eval_breakdown_json(&mut pos);
-        format!(",\"root_eval\":{}", root_json)
-    } else {
-        String::new()
-    };
-
-    let mut out = format!(
-        "{{\"depth\":{},\"nodes\":{},\"time_ms\":{},\"nps\":{},\"score\":{},\"best\":\"{}\",\"pv\":\"{}\",\"rep_avoid\":{}}}",
-        completed_depth,
-        ctx.nodes,
-        elapsed_ms as u64,
-        nps,
-        best_score,
-        best_str,
-        pv_str,
-        rep_avoid_used
-    );
-    out.push_str(&root_eval_field);
-
-        state.killers = ctx.killers;
-        state.history_heur = ctx.history_heur;
-
-        out
+            out
+        })
     })
 }
 
