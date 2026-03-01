@@ -14,6 +14,8 @@ import { registerEngineBench } from './utils/engineBench.js';
 const device = DeviceCheck.isMobile() ? "mobile" : "desktop";
 let mediaUrls;
 
+document.body?.classList.add(device === "mobile" ? "device-mobile" : "device-desktop");
+
 if (!device) {
     console.log(device);
     // Abbruch, wenn kein Desktop-Rechner mit Maus identifiziert wurde
@@ -60,6 +62,8 @@ if (mediaUrls != null) {
         const timeText = startOverlay?.querySelector(".start-time-text");
         const legalMovesButton = startOverlay?.querySelector("[data-legal-moves]");
         const startButton = startOverlay?.querySelector(".start-button");
+        const gameBackButton = document.querySelector(".game-back-button");
+        const compactStatusMedia = window.matchMedia("(max-width: 560px)");
 
         // Time->TT-Mapping für den Startdialog.
         const ttFromTimeMs = (timeMs) => {
@@ -85,6 +89,12 @@ if (mediaUrls != null) {
             if (!gameState) return;
             const value = String(text || "").trim();
             gameState.textContent = value || "\u00A0";
+        };
+
+        const setGameBackButtonVisible = (visible = false) => {
+            if (!gameBackButton) return;
+            gameBackButton.classList.toggle("show", visible);
+            gameBackButton.setAttribute("aria-hidden", visible ? "false" : "true");
         };
 
         // Zeitbalken + Engine-Livewerte als gekapseltes Mini-Modul.
@@ -145,10 +155,11 @@ if (mediaUrls != null) {
                     return;
                 }
                 lastStatusUpdate = now;
-                const timeText = `Time: ${formatTimeMs(displayTimeMs)}`;
+                const compact = device === "mobile" || compactStatusMedia?.matches === true;
+                const timeText = `${compact ? "T" : "Time"}: ${formatTimeMs(displayTimeMs)}`;
                 const ttText = `TT: ${formatTt(ttMb)}`;
-                const depthText = `Depth: ${formatDepth(stats.depth)}`;
-                const nodesText = `Nodes: ${formatNodes(stats.nodes)}`;
+                const depthText = `${compact ? "D" : "Depth"}: ${formatDepth(stats.depth)}`;
+                const nodesText = `${compact ? "N" : "Nodes"}: ${formatNodes(stats.nodes)}`;
 
                 if (engineStatusTime && engineStatusTt && engineStatusDepth && engineStatusNodes) {
                     engineStatusTime.textContent = timeText;
@@ -320,6 +331,10 @@ if (mediaUrls != null) {
                 onGameEnd: (outcome) => {
                     engineTimer.stop(0, 1, true, {});
                     setGameState(outcome?.message || "Game over.");
+                    setGameBackButtonVisible(true);
+                    if (startButton) {
+                        startButton.disabled = false;
+                    }
                 }
             });
 
@@ -329,6 +344,7 @@ if (mediaUrls != null) {
                 timeMs: START_TIME_MS
             };
             setGameState("");
+            setGameBackButtonVisible(false);
 
             // Schreibt den aktuellen Setup-State in die Menüsteuerung.
             const renderSetup = () => {
@@ -373,6 +389,19 @@ if (mediaUrls != null) {
                 renderSetup();
             });
 
+            gameBackButton?.addEventListener("click", () => {
+                setGameState("");
+                setGameBackButtonVisible(false);
+                if (startButton) {
+                    startButton.disabled = false;
+                }
+                renderSetup();
+                if (startOverlay) {
+                    startOverlay.classList.add("show");
+                    startOverlay.setAttribute("aria-hidden", "false");
+                }
+            });
+
             startButton?.addEventListener("click", async () => {
                 if (startButton.disabled) return;
                 startButton.disabled = true;
@@ -387,6 +416,7 @@ if (mediaUrls != null) {
                 c1.initPosition(getStartFen());
                 b1.myColor = setup.playerColor;
                 setGameState("");
+                setGameBackButtonVisible(false);
 
                 if (b1.isFlipped !== isBlack) {
                     b1.flipBoard();

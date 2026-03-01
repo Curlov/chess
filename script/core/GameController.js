@@ -239,7 +239,16 @@ export default class GameController {
     }
 
     async search(options = {}) {
-        const { depth = 4, timeMs = 0, ttMb = 128, fen = null, debugRootEval = false, onProgress = null } = options || {};
+        const {
+            depth = 4,
+            timeMs = 0,
+            ttMb = 128,
+            fen = null,
+            debugRootEval = false,
+            onProgress = null,
+            useHistory = true,
+            useBook = true
+        } = options || {};
         const targetFen = fen ?? this.currentFen ?? this.baseFen;
         if (!targetFen) {
             console.warn("search: keine FEN vorhanden");
@@ -263,7 +272,7 @@ export default class GameController {
         let history = "";
         let uciHistory = "";
         let bookEnabled = false;
-        if (isCurrent) {
+        if (isCurrent && useHistory === true) {
             const historyList = [];
             if (this.baseFen) {
                 historyList.push(this.baseFen);
@@ -283,7 +292,7 @@ export default class GameController {
             }
             history = historyList.join("\n");
 
-            if (this.baseFen === getStartFen()) {
+            if (useBook === true && this.baseFen === getStartFen()) {
                 const expectedPly = this._getFenPlyCount(this.currentFen);
                 const moveCount = this.moveList && Number.isFinite(this.moveList.index)
                     ? Math.max(0, this.moveList.index + 1)
@@ -399,7 +408,34 @@ export default class GameController {
 
         this._logEngineResult(result);
 
-        const bestUci = this._extractBestMove(result);
+        let bestUci = this._extractBestMove(result);
+        if (!bestUci) {
+            const gameEnded = await this._maybeReportGameEnd(fenBefore, "auto_opponent_no_best_probe");
+            if (gameEnded) {
+                return;
+            }
+            try {
+                const fallbackTimeMs = Math.max(
+                    300,
+                    Math.min(1200, Number(this.engineTimeMs) || 1200)
+                );
+                const fallbackResult = await this.search({
+                    fen: fenBefore,
+                    timeMs: fallbackTimeMs,
+                    ttMb: this.engineTtMb,
+                    useHistory: false,
+                    useBook: false
+                });
+                this._logEngineResult(fallbackResult);
+                bestUci = this._extractBestMove(fallbackResult);
+                if (bestUci) {
+                    result = fallbackResult;
+                }
+            } catch (err) {
+                console.error("autoOpponent: fallback search failed:", err);
+            }
+        }
+
         if (!bestUci) {
             const outcome = this._inferNoBestMoveOutcome(result, fenBefore);
             if (outcome) {

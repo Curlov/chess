@@ -55,7 +55,7 @@ html  {
 .board-title {
     color: var(--engine-accent);
     font-family: "Softball", "Agatha", "Georgia", serif;
-    font-size: 61px;
+    font-size: clamp(38px, 7vw, 61px);
     line-height: 1;
     letter-spacing: 0.01em;
     margin-bottom: 25px;
@@ -242,6 +242,12 @@ html  {
     white-space: nowrap;
 }
 
+.body.device-mobile .engine-status {
+    gap: 4px;
+    font-size: clamp(10px, 2.8vw, 12px);
+    letter-spacing: 0;
+}
+
 .game-state {
     width: var(--timebarWidth, var(--allFields));
     min-height: 24px;
@@ -252,6 +258,38 @@ html  {
     text-align: center;
     font-weight: 600;
     letter-spacing: 0.01em;
+}
+
+.game-back-button {
+    width: auto;
+    min-width: 0;
+    height: 34px;
+    margin-top: 10px;
+    padding: 0 14px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    align-self: center;
+    border-radius: 8px;
+    border: 1px solid rgba(255, 255, 255, 0.18);
+    background: transparent;
+    color: rgba(255, 255, 255, 0.8);
+    cursor: pointer;
+    font-size: 16px;
+    opacity: 0;
+    visibility: hidden;
+    pointer-events: none;
+    transition: opacity 120ms ease;
+}
+
+.game-back-button.show {
+    opacity: 1;
+    visibility: visible;
+    pointer-events: auto;
+}
+
+.game-back-button:hover {
+    background: rgba(255, 255, 255, 0.08);
 }
 
 .start-overlay {
@@ -343,29 +381,55 @@ html  {
 }
 
 @media (max-width: 700px) {
+    .body {
+        padding: 8px 0 10px;
+    }
+
     .board-title {
-        font-size: 55px;
-        margin-bottom: 25px;
+        font-size: clamp(30px, 10vw, 46px);
+        line-height: 0.92;
+        margin-bottom: 10px;
+        max-width: min(90vw, var(--timebarWidth, var(--allFields)));
     }
 
     .start-dialog {
-        width: min(520px, calc(100vw - 8px));
-        padding: 20px;
-        gap: 16px;
+        width: min(330px, calc(100vw - 36px));
+        padding: 14px;
+        gap: 12px;
     }
 
     .start-title {
-        font-size: 24px;
+        font-size: 19px;
+    }
+
+    .start-row {
+        gap: 8px;
     }
 
     .start-label,
     .start-time-text {
-        font-size: 16px;
+        font-size: 14px;
     }
 
     .start-toggle,
     .start-button {
-        height: 50px;
+        height: 42px;
+        font-size: 15px;
+    }
+
+    .engine-status {
+        gap: 4px;
+        font-size: clamp(9px, 2.8vw, 12px);
+        letter-spacing: 0;
+    }
+
+    .game-state {
+        margin-top: 22px;
+        font-size: 20px;
+    }
+
+    .game-back-button {
+        height: 38px;
         font-size: 17px;
     }
 }
