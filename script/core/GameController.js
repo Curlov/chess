@@ -73,8 +73,8 @@ export default class GameController {
         this.currentFen  = targetFen;
         this.currentMeta = fenZuFigurenListe(targetFen);
 
-        this.board.renderFen(this.currentMeta.figuresPosition);
         this.board.setSideToMove(this.currentMeta.moveRight);
+        this.board.renderFen(this.currentMeta.figuresPosition);
         this.board.setEnPassant(this.currentMeta.enpassant);
     }
 
