@@ -213,8 +213,47 @@ export default class GameController {
         }
 
         if (this.currentMeta.moveRight !== side) {
-            await this._autoOpponentMove();
+            try {
+                await this._autoOpponentMove();
+            } catch (err) {
+                console.error("syncAutoOpponentForPlayer: auto move failed:", err);
+            }
         }
+
+        // Failsafe: Wenn nach dem Start (z.B. Spieler = Schwarz) immer noch
+        // die Gegenseite am Zug ist, erzwinge genau einen Retry ohne Book/History.
+        if (this.currentMeta && this.currentMeta.moveRight !== side) {
+            const fenBefore = this.currentFen;
+            if (!fenBefore) {
+                this.board.myColor = side;
+                return;
+            }
+
+            try {
+                const fallbackTimeMs = Math.max(
+                    400,
+                    Math.min(1200, Number(this.engineTimeMs) || 1200)
+                );
+                const fallbackResult = await this.search({
+                    fen: fenBefore,
+                    timeMs: fallbackTimeMs,
+                    ttMb: this.engineTtMb,
+                    useHistory: false,
+                    useBook: false
+                });
+                const bestUci = this._extractBestMove(fallbackResult);
+                if (bestUci) {
+                    await this._applyEngineMove(bestUci, fenBefore);
+                } else {
+                    await this._maybeReportGameEnd(fenBefore, "sync_auto_retry_no_best");
+                }
+            } catch (err) {
+                console.error("syncAutoOpponentForPlayer: fallback move failed:", err);
+            }
+        }
+
+        // Render-Pfade können myColor zwischendurch überschreiben.
+        this.board.myColor = side;
     }
 
     async perft(depth = 1, fen = null) {
