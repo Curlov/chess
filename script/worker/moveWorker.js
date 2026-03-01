@@ -7,23 +7,200 @@ const wasmReady = init().catch((err) => {
     throw err;
 });
 
-const openingBookUrl = new URL("../engine/openingBook/opening_book_1000.json", import.meta.url);
-// Eröffnungsbuch lazy laden; Fehler deaktivieren nur das Book, nicht den Worker.
+const START_FEN = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
+const BOOK_MIN_SCORE_RATIO = 0.2;
+const BOOK_WEIGHT_POWER = 0.75;
+const openingBookUrls = [
+    new URL("../engine/openingBook/opening_book_100000.json", import.meta.url),
+    new URL("../engine/openingBook/opening_book_50000.json", import.meta.url),
+    new URL("../engine/openingBook/opening_book_20000.json", import.meta.url),
+    new URL("../engine/openingBook/opening_book_10000.json", import.meta.url),
+    new URL("../engine/openingBook/opening_book_5000.json", import.meta.url),
+    new URL("../engine/openingBook/opening_book_1000.json", import.meta.url),
+    // Zweite lokale Quelle (falls vorhanden) zur Erweiterung der Variantenbasis.
+    new URL("../../src/book/opening_book_1000.json", import.meta.url)
+];
+
+// Was: Fuehrt `parseUci` aus und kapselt einen klar abgegrenzten Worker-Teilschritt.
+// Warum: Haelt die Logik modular, nachvollziehbar und separat optimierbar.
+// Kosten: Laufzeit ist kontextabhaengig und wird durch Eingabegroesse/Verzweigungen bestimmt.
+function parseUci(uci) {
+    if (typeof uci !== "string") return null;
+    const s = uci.trim();
+    if (s.length !== 4 && s.length !== 5) return null;
+    const from = lanToField(s.slice(0, 2));
+    const to = lanToField(s.slice(2, 4));
+    if (from === null || to === null) return null;
+    const promo = s.length === 5 ? s[4] : "";
+    return { from, to, promo };
+}
+
+// Was: Fuehrt `applyUciMove` aus und kapselt einen klar abgegrenzten Worker-Teilschritt.
+// Warum: Haelt die Logik modular, nachvollziehbar und separat optimierbar.
+// Kosten: Laufzeit ist kontextabhaengig und wird durch Eingabegroesse/Verzweigungen bestimmt.
+function applyUciMove(fen, uci) {
+    const parsed = parseUci(uci);
+    if (!parsed) return null;
+    const nextFen = apply_move(fen, parsed.from, parsed.to, parsed.promo || "");
+    if (!nextFen || nextFen === fen) return null;
+    return nextFen;
+}
+
+// Was: Fuehrt `fenToBookKey` aus und kapselt einen klar abgegrenzten Worker-Teilschritt.
+// Warum: Haelt die Logik modular, nachvollziehbar und separat optimierbar.
+// Kosten: Laufzeit ist kontextabhaengig und wird durch Eingabegroesse/Verzweigungen bestimmt.
+function fenToBookKey(fen) {
+    const parts = String(fen || "").trim().split(/\s+/);
+    if (parts.length < 4) return "";
+    return `${parts[0]} ${parts[1]} ${parts[2]} ${parts[3]}`;
+}
+
+// Was: Fuehrt `mergeMovesInto` aus und kapselt einen klar abgegrenzten Worker-Teilschritt.
+// Warum: Haelt die Logik modular, nachvollziehbar und separat optimierbar.
+// Kosten: Laufzeit ist kontextabhaengig und wird durch Eingabegroesse/Verzweigungen bestimmt.
+function mergeMovesInto(targetMoves, sourceMoves) {
+    if (!sourceMoves || typeof sourceMoves !== "object") return;
+    for (const uci in sourceMoves) {
+        const raw = sourceMoves[uci];
+        const score = typeof raw === "number" ? raw : Number(raw);
+        if (!Number.isFinite(score) || score <= 0) continue;
+        targetMoves[uci] = (targetMoves[uci] || 0) + score;
+    }
+}
+
+// Was: Fuehrt `mergeHistoryBooks` aus und kapselt einen klar abgegrenzten Worker-Teilschritt.
+// Warum: Haelt die Logik modular, nachvollziehbar und separat optimierbar.
+// Kosten: Laufzeit ist kontextabhaengig und wird durch Eingabegroesse/Verzweigungen bestimmt.
+function mergeHistoryBooks(bookList) {
+    const merged = Object.create(null);
+    for (const source of bookList) {
+        if (!source || typeof source !== "object") continue;
+        for (const history in source) {
+            const entry = source[history];
+            if (!entry || typeof entry !== "object" || !entry.moves) continue;
+            if (!merged[history]) {
+                merged[history] = { moves: Object.create(null) };
+            }
+            mergeMovesInto(merged[history].moves, entry.moves);
+        }
+    }
+    return merged;
+}
+
+// Was: Fuehrt `historyPly` aus und kapselt einen klar abgegrenzten Worker-Teilschritt.
+// Warum: Haelt die Logik modular, nachvollziehbar und separat optimierbar.
+// Kosten: Laufzeit ist kontextabhaengig und wird durch Eingabegroesse/Verzweigungen bestimmt.
+function historyPly(history) {
+    if (!history) return 0;
+    return String(history).trim().split(/\s+/).filter(Boolean).length;
+}
+
+// Was: Fuehrt `resolveHistoryFen` aus und kapselt einen klar abgegrenzten Worker-Teilschritt.
+// Warum: Haelt die Logik modular, nachvollziehbar und separat optimierbar.
+// Kosten: Laufzeit ist kontextabhaengig und wird durch Eingabegroesse/Verzweigungen bestimmt.
+function resolveHistoryFen(history, fenByHistory) {
+    if (fenByHistory.has(history)) {
+        return fenByHistory.get(history);
+    }
+    if (!history) {
+        fenByHistory.set("", START_FEN);
+        return START_FEN;
+    }
+    const text = String(history).trim();
+    if (!text) {
+        fenByHistory.set("", START_FEN);
+        return START_FEN;
+    }
+    const lastSpace = text.lastIndexOf(" ");
+    const parent = lastSpace >= 0 ? text.slice(0, lastSpace) : "";
+    const move = lastSpace >= 0 ? text.slice(lastSpace + 1) : text;
+    const parentFen = resolveHistoryFen(parent, fenByHistory);
+    if (!parentFen) {
+        fenByHistory.set(history, null);
+        return null;
+    }
+    const nextFen = applyUciMove(parentFen, move);
+    if (!nextFen) {
+        fenByHistory.set(history, null);
+        return null;
+    }
+    fenByHistory.set(history, nextFen);
+    return nextFen;
+}
+
+// Was: Fuehrt `buildPositionBook` aus und kapselt einen klar abgegrenzten Worker-Teilschritt.
+// Warum: Haelt die Logik modular, nachvollziehbar und separat optimierbar.
+// Kosten: Laufzeit ist kontextabhaengig und wird durch Eingabegroesse/Verzweigungen bestimmt.
+function buildPositionBook(historyBook) {
+    const positionBook = Object.create(null);
+    const fenByHistory = new Map();
+    fenByHistory.set("", START_FEN);
+
+    const keys = Object.keys(historyBook).sort((a, b) => historyPly(a) - historyPly(b));
+    for (const history of keys) {
+        const entry = historyBook[history];
+        if (!entry || typeof entry !== "object" || !entry.moves) continue;
+
+        const fen = resolveHistoryFen(history, fenByHistory);
+        if (!fen) continue;
+
+        const key = fenToBookKey(fen);
+        if (!key) continue;
+
+        if (!positionBook[key]) {
+            positionBook[key] = {
+                moves: Object.create(null),
+                transpositions: 0
+            };
+        }
+        mergeMovesInto(positionBook[key].moves, entry.moves);
+        positionBook[key].transpositions += 1;
+    }
+    return positionBook;
+}
+
+// Was: Fuehrt `loadMergedHistoryBook` aus und kapselt einen klar abgegrenzten Worker-Teilschritt.
+// Warum: Haelt die Logik modular, nachvollziehbar und separat optimierbar.
+// Kosten: Laufzeit ist kontextabhaengig und wird durch Eingabegroesse/Verzweigungen bestimmt.
+async function loadMergedHistoryBook() {
+    const loaded = (await Promise.all(openingBookUrls.map(async (url) => {
+        try {
+            const res = await fetch(url);
+            if (!res.ok) return null;
+            const data = await res.json();
+            if (!data || typeof data !== "object") return null;
+            return { url: url.pathname, data };
+        } catch (_err) {
+            // Einzeldatei optional: Fehler ignorieren und nächste testen.
+            return null;
+        }
+    }))).filter(Boolean);
+    if (!loaded.length) return null;
+    const merged = mergeHistoryBooks(loaded.map((x) => x.data));
+    console.log(
+        "Opening book loaded:",
+        loaded.map((x) => x.url).join(", "),
+        "| merged positions:",
+        Object.keys(merged).length
+    );
+    return merged;
+}
+
+// Was: Initialisiert `openingBookReady` als einmaliges Laden/Mergen/Indexieren der Buchdaten.
+// Warum: Verhindert wiederholte I/O- und Aufbaukosten pro Suche und hält den Worker-Pfad schlank.
+// Kosten: Einmaliger Startaufwand, danach nur Promise-Resolve auf bereits vorbereitete Daten.
 const openingBookReady = (async () => {
     try {
-        const res = await fetch(openingBookUrl);
-        if (!res.ok) {
-            console.warn("Opening book load failed:", res.status, res.statusText);
+        await wasmReady;
+        const historyBook = await loadMergedHistoryBook();
+        if (!historyBook) {
+            console.warn("Opening book not available");
             return null;
         }
-        const data = await res.json();
-        if (!data || typeof data !== "object") {
-            console.warn("Opening book invalid format");
-            return null;
-        }
-        return data;
+        const positionBook = buildPositionBook(historyBook);
+        return { historyBook, positionBook };
     } catch (err) {
-        console.warn("Opening book load error:", err);
+        console.warn("Opening book load/build error:", err);
         return null;
     }
 })();
@@ -38,12 +215,17 @@ const bookState = {
 let searchSeq = 0;
 let activeSearchId = 0;
 
-/** Normalisiert numerische Payload-Werte auf nicht-negative Integer. */
+// Was: Fuehrt `toSafeInt` aus und kapselt einen klar abgegrenzten Worker-Teilschritt.
+// Warum: Haelt die Logik modular, nachvollziehbar und separat optimierbar.
+// Kosten: Laufzeit ist kontextabhaengig und wird durch Eingabegroesse/Verzweigungen bestimmt.
 function toSafeInt(value) {
     const n = Number(value);
     return Number.isFinite(n) && n >= 0 ? Math.floor(n) : 0;
 }
 
+// Was: Leitet Engine-Fortschritt als Worker-Message an den Main-Thread weiter.
+// Warum: Entkoppelt Suchlauf und UI-Update ohne Zusatzsuche oder Polling auf Main-Thread-Seite.
+// Kosten: Sehr geringe, ereignisgetriebene Message-Kosten pro Fortschrittsmeldung.
 globalThis.__engine_progress = (depth, nodesCompleted, nodesTotal, elapsedMs) => {
     if (!activeSearchId) return;
     // Progress nur für die aktuell laufende Suche senden.
@@ -58,12 +240,16 @@ globalThis.__engine_progress = (depth, nodesCompleted, nodesTotal, elapsedMs) =>
     });
 };
 
-/** Normiert History-Strings, damit Book-Lookup stabil bleibt. */
+// Was: Fuehrt `normalizeHistory` aus und kapselt einen klar abgegrenzten Worker-Teilschritt.
+// Warum: Haelt die Logik modular, nachvollziehbar und separat optimierbar.
+// Kosten: Laufzeit ist kontextabhaengig und wird durch Eingabegroesse/Verzweigungen bestimmt.
 function normalizeHistory(history) {
     return String(history || "").trim().replace(/\s+/g, " ");
 }
 
-/** Erkennt Partiewechsel/History-Sprünge -> Book-State zurücksetzen. */
+// Was: Fuehrt `shouldResetBook` aus und kapselt einen klar abgegrenzten Worker-Teilschritt.
+// Warum: Haelt die Logik modular, nachvollziehbar und separat optimierbar.
+// Kosten: Laufzeit ist kontextabhaengig und wird durch Eingabegroesse/Verzweigungen bestimmt.
 function shouldResetBook(gameId, history) {
     if (bookState.gameId !== gameId) return true;
     if (history.length < bookState.lastHistory.length) return true;
@@ -71,7 +257,9 @@ function shouldResetBook(gameId, history) {
     return false;
 }
 
-/** LAN (z. B. "e2") zu Feldindex 0..63. */
+// Was: Fuehrt `lanToField` aus und kapselt einen klar abgegrenzten Worker-Teilschritt.
+// Warum: Haelt die Logik modular, nachvollziehbar und separat optimierbar.
+// Kosten: Laufzeit ist kontextabhaengig und wird durch Eingabegroesse/Verzweigungen bestimmt.
 function lanToField(lan) {
     if (!lan || lan.length !== 2) return null;
     const file = lan.charCodeAt(0) - 97; // 'a'
@@ -80,61 +268,73 @@ function lanToField(lan) {
     return rank * 8 + file;
 }
 
-/** UCI-String ("e2e4", optional Promo) in Felder zerlegen. */
-function parseUci(uci) {
-    if (typeof uci !== "string") return null;
-    const s = uci.trim();
-    if (s.length !== 4 && s.length !== 5) return null;
-    const from = lanToField(s.slice(0, 2));
-    const to = lanToField(s.slice(2, 4));
-    if (from === null || to === null) return null;
-    const promo = s.length === 5 ? s[4] : "";
-    return { from, to, promo };
-}
-
-function pickBookMove(moves) {
-    let bestMove = "";
-    let bestScore = Number.NEGATIVE_INFINITY;
-    for (const uci in moves) {
-        const raw = moves[uci];
-        const score = typeof raw === "number" ? raw : Number(raw);
-        if (!Number.isFinite(score)) continue;
-        if (score > bestScore) {
-            bestScore = score;
-            bestMove = uci;
-        }
-    }
-    return bestMove;
-}
-
-function pickLegalBookMove(fen, moves) {
+// Was: Fuehrt `collectLegalBookMoves` aus und kapselt einen klar abgegrenzten Worker-Teilschritt.
+// Warum: Haelt die Logik modular, nachvollziehbar und separat optimierbar.
+// Kosten: Laufzeit ist kontextabhaengig und wird durch Eingabegroesse/Verzweigungen bestimmt.
+function collectLegalBookMoves(fen, moves) {
     const entries = [];
     for (const uci in moves) {
         const raw = moves[uci];
         const score = typeof raw === "number" ? raw : Number(raw);
-        if (!Number.isFinite(score)) continue;
+        if (!Number.isFinite(score) || score <= 0) continue;
+        if (!applyUciMove(fen, uci)) continue;
         entries.push({ uci, score });
     }
-    entries.sort((a, b) => b.score - a.score);
-
-    // Pro Ausgangsfeld die legalen Ziele nur einmal vom WASM holen.
-    const cache = new Map();
-    for (const entry of entries) {
-        const parsed = parseUci(entry.uci);
-        if (!parsed) continue;
-        let targets = cache.get(parsed.from);
-        if (!targets) {
-            targets = new Set(Array.from(get_valid_moves(fen, parsed.from)));
-            cache.set(parsed.from, targets);
-        }
-        if (targets.has(parsed.to)) {
-            return entry.uci;
-        }
-    }
-    return "";
+    return entries;
 }
 
-/** Liefert den besten legalen Buchzug oder null (falls nicht verfügbar). */
+// Was: Fuehrt `filterBookCandidates` aus und kapselt einen klar abgegrenzten Worker-Teilschritt.
+// Warum: Haelt die Logik modular, nachvollziehbar und separat optimierbar.
+// Kosten: Laufzeit ist kontextabhaengig und wird durch Eingabegroesse/Verzweigungen bestimmt.
+function filterBookCandidates(entries) {
+    if (!entries.length) return entries;
+    let bestScore = 0;
+    for (const entry of entries) {
+        if (entry.score > bestScore) bestScore = entry.score;
+    }
+    if (bestScore <= 0) return entries;
+    const threshold = bestScore * BOOK_MIN_SCORE_RATIO;
+    const filtered = entries.filter((entry) => entry.score >= threshold);
+    return filtered.length ? filtered : entries;
+}
+
+// Was: Fuehrt `pickWeightedBookMove` aus und kapselt einen klar abgegrenzten Worker-Teilschritt.
+// Warum: Haelt die Logik modular, nachvollziehbar und separat optimierbar.
+// Kosten: Laufzeit ist kontextabhaengig und wird durch Eingabegroesse/Verzweigungen bestimmt.
+function pickWeightedBookMove(entries) {
+    if (!entries.length) return "";
+    let weightSum = 0;
+    for (const entry of entries) {
+        weightSum += Math.pow(entry.score, BOOK_WEIGHT_POWER);
+    }
+    if (!(weightSum > 0)) {
+        const idx = Math.floor(Math.random() * entries.length);
+        return entries[idx].uci;
+    }
+    let r = Math.random() * weightSum;
+    for (const entry of entries) {
+        r -= Math.pow(entry.score, BOOK_WEIGHT_POWER);
+        if (r <= 0) return entry.uci;
+    }
+    return entries[entries.length - 1].uci;
+}
+
+// Was: Fuehrt `getBookEntry` aus und kapselt einen klar abgegrenzten Worker-Teilschritt.
+// Warum: Haelt die Logik modular, nachvollziehbar und separat optimierbar.
+// Kosten: Laufzeit ist kontextabhaengig und wird durch Eingabegroesse/Verzweigungen bestimmt.
+function getBookEntry(bookData, fen, history) {
+    if (!bookData) return null;
+    const posKey = fenToBookKey(fen);
+    const posEntry = posKey ? bookData.positionBook[posKey] : null;
+    if (posEntry && posEntry.moves) return posEntry;
+    const historyEntry = bookData.historyBook[history];
+    if (historyEntry && historyEntry.moves) return historyEntry;
+    return null;
+}
+
+// Was: Fuehrt `getBookMove` aus und kapselt einen klar abgegrenzten Worker-Teilschritt.
+// Warum: Haelt die Logik modular, nachvollziehbar und separat optimierbar.
+// Kosten: Laufzeit ist kontextabhaengig und wird durch Eingabegroesse/Verzweigungen bestimmt.
 async function getBookMove(fen, historyUci, gameId, bookEnabled) {
     if (!bookEnabled) return null;
 
@@ -147,25 +347,34 @@ async function getBookMove(fen, historyUci, gameId, bookEnabled) {
 
     if (!bookState.active) return null;
 
-    const book = await openingBookReady;
-    if (!book) {
+    const bookData = await openingBookReady;
+    if (!bookData) {
         bookState.active = false;
         return null;
     }
-    const entry = book[history];
+    const entry = getBookEntry(bookData, fen, history);
     if (!entry || !entry.moves) {
         bookState.active = false;
         return null;
     }
-    const bestMove = pickLegalBookMove(fen, entry.moves);
-    if (!bestMove) {
+
+    const legalEntries = collectLegalBookMoves(fen, entry.moves);
+    if (!legalEntries.length) {
         bookState.active = false;
         return null;
     }
-    return bestMove;
+    const candidates = filterBookCandidates(legalEntries);
+    const selectedMove = pickWeightedBookMove(candidates);
+    if (!selectedMove) {
+        bookState.active = false;
+        return null;
+    }
+    return selectedMove;
 }
 
-/** Sammelt alle pseudo-legale Züge für Perft-Rekursion. */
+// Was: Fuehrt `collectMoves` aus und kapselt einen klar abgegrenzten Worker-Teilschritt.
+// Warum: Haelt die Logik modular, nachvollziehbar und separat optimierbar.
+// Kosten: Laufzeit ist kontextabhaengig und wird durch Eingabegroesse/Verzweigungen bestimmt.
 function collectMoves(fen) {
     const moves = [];
     for (let from = 0; from < 64; from++) {
@@ -178,7 +387,9 @@ function collectMoves(fen) {
     return moves;
 }
 
-/** Parst die Brettkomponente aus FEN in 64er-Array. */
+// Was: Fuehrt `parseBoard` aus und kapselt einen klar abgegrenzten Worker-Teilschritt.
+// Warum: Haelt die Logik modular, nachvollziehbar und separat optimierbar.
+// Kosten: Laufzeit ist kontextabhaengig und wird durch Eingabegroesse/Verzweigungen bestimmt.
 function parseBoard(fen) {
     const boardPart = String(fen || "").split(/\s+/)[0];
     if (!boardPart) return null;
@@ -204,7 +415,9 @@ function parseBoard(fen) {
     return board;
 }
 
-/** Prüft, ob ein Zug auf der Zielreihe zur Bauernumwandlung führt. */
+// Was: Fuehrt `isPromotionMove` aus und kapselt einen klar abgegrenzten Worker-Teilschritt.
+// Warum: Haelt die Logik modular, nachvollziehbar und separat optimierbar.
+// Kosten: Laufzeit ist kontextabhaengig und wird durch Eingabegroesse/Verzweigungen bestimmt.
 function isPromotionMove(piece, to) {
     if (!piece) return false;
     const toRank = Math.floor(to / 8);
@@ -213,7 +426,9 @@ function isPromotionMove(piece, to) {
     return false;
 }
 
-/** Rekursive Perft-Implementierung im Worker (JS-Seite). */
+// Was: Fuehrt `perft` aus und kapselt einen klar abgegrenzten Worker-Teilschritt.
+// Warum: Haelt die Logik modular, nachvollziehbar und separat optimierbar.
+// Kosten: Laufzeit ist kontextabhaengig und wird durch Eingabegroesse/Verzweigungen bestimmt.
 function perft(fen, depth) {
     if (depth <= 0) return 1;
     const board = parseBoard(fen);
@@ -250,6 +465,9 @@ function perft(fen, depth) {
     return nodes;
 }
 
+// Was: Registriert globales Error-Logging fuer den Worker.
+// Warum: Macht Laufzeitfehler im Worker sofort sichtbar und erleichtert Diagnose im Browser-Log.
+// Kosten: Nur im Fehlerfall aktiv; im Normalbetrieb praktisch kein Overhead.
 self.addEventListener("error", (e) => {
     console.error(
         "Worker global error:",
@@ -260,6 +478,9 @@ self.addEventListener("error", (e) => {
     );
 });
 
+// Was: Zentraler Dispatch fuer alle eingehenden Worker-Aktionen (`moves`, `apply`, `perft`, `search`).
+// Warum: Haelt den Kommunikationspfad zwischen UI und WASM-Engine an einer Stelle konsistent.
+// Kosten: Konstante Dispatch-Kosten plus jeweilige Aktionskosten der aufgerufenen Engine-Routinen.
 self.onmessage = async function (e) {
     const data = e.data || {};
     const action = data.action || "moves";
