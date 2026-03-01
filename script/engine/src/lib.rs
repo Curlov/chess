@@ -38,6 +38,9 @@ const PROGRESS_EMIT_INTERVAL_MS: f64 = 250.0;
 // Erzeugt ein Bitboard mit genau einem gesetzten Bit.
 // `sq` ist das Feld 0..63 (a1=0, h8=63).
 // Wird für schnelle Maskenbildung in allen Routinen genutzt.
+// Was: Führt `bb` aus und kapselt einen klar abgegrenzten Engine-Teilschritt.
+// Warum: Hält die Gesamtlogik modular, nachvollziehbar und für Optimierungen isolierbar.
+// Kosten: Laufzeit ist kontextabhängig und wird durch Aufruftiefe/Branching bestimmt.
 fn bb(sq: u8) -> u64 {
     1u64 << sq
 }
@@ -46,6 +49,9 @@ fn bb(sq: u8) -> u64 {
 // Liefert den Index des niederwertigsten gesetzten Bits.
 // Erwartet x != 0, ansonsten Debug-Assertion.
 // Wird für Ray-Clipping und Bitboard-Iteration verwendet.
+// Was: Führt `lsb_idx` aus und kapselt einen klar abgegrenzten Engine-Teilschritt.
+// Warum: Hält die Gesamtlogik modular, nachvollziehbar und für Optimierungen isolierbar.
+// Kosten: Laufzeit ist kontextabhängig und wird durch Aufruftiefe/Branching bestimmt.
 fn lsb_idx(x: u64) -> usize {
     debug_assert!(x != 0);
     x.trailing_zeros() as usize
@@ -55,17 +61,26 @@ fn lsb_idx(x: u64) -> usize {
 // Liefert den Index des höchstwertigsten gesetzten Bits.
 // Erwartet x != 0, ansonsten Debug-Assertion.
 // Hilfreich für das Abschneiden von Rays "nach hinten".
+// Was: Führt `msb_idx` aus und kapselt einen klar abgegrenzten Engine-Teilschritt.
+// Warum: Hält die Gesamtlogik modular, nachvollziehbar und für Optimierungen isolierbar.
+// Kosten: Laufzeit ist kontextabhängig und wird durch Aufruftiefe/Branching bestimmt.
 fn msb_idx(x: u64) -> usize {
     debug_assert!(x != 0);
     (63 - (x.leading_zeros() as u32)) as usize
 }
 
 #[inline]
+// Was: Führt `popcnt` aus und kapselt einen klar abgegrenzten Engine-Teilschritt.
+// Warum: Hält die Gesamtlogik modular, nachvollziehbar und für Optimierungen isolierbar.
+// Kosten: Laufzeit ist kontextabhängig und wird durch Aufruftiefe/Branching bestimmt.
 fn popcnt(x: u64) -> i32 {
     x.count_ones() as i32
 }
 
 #[inline]
+// Was: Führt `pop_lsb` aus und kapselt einen klar abgegrenzten Engine-Teilschritt.
+// Warum: Hält die Gesamtlogik modular, nachvollziehbar und für Optimierungen isolierbar.
+// Kosten: Laufzeit ist kontextabhängig und wird durch Aufruftiefe/Branching bestimmt.
 fn pop_lsb(bb: &mut u64) -> u8 {
     let lsb = *bb & bb.wrapping_neg();
     let idx = lsb.trailing_zeros() as u8;
@@ -74,16 +89,25 @@ fn pop_lsb(bb: &mut u64) -> u8 {
 }
 
 #[inline]
+// Was: Führt `mirror_sq` aus und kapselt einen klar abgegrenzten Engine-Teilschritt.
+// Warum: Hält die Gesamtlogik modular, nachvollziehbar und für Optimierungen isolierbar.
+// Kosten: Laufzeit ist kontextabhängig und wird durch Aufruftiefe/Branching bestimmt.
 fn mirror_sq(sq: u8) -> u8 {
     sq ^ 56
 }
 
 #[inline]
+// Was: Führt `shift_east` aus und kapselt einen klar abgegrenzten Engine-Teilschritt.
+// Warum: Hält die Gesamtlogik modular, nachvollziehbar und für Optimierungen isolierbar.
+// Kosten: Laufzeit ist kontextabhängig und wird durch Aufruftiefe/Branching bestimmt.
 fn shift_east(bb: u64) -> u64 {
     (bb << 1) & !FILE_A
 }
 
 #[inline]
+// Was: Führt `shift_west` aus und kapselt einen klar abgegrenzten Engine-Teilschritt.
+// Warum: Hält die Gesamtlogik modular, nachvollziehbar und für Optimierungen isolierbar.
+// Kosten: Laufzeit ist kontextabhängig und wird durch Aufruftiefe/Branching bestimmt.
 fn shift_west(bb: u64) -> u64 {
     (bb >> 1) & !FILE_H
 }
@@ -508,21 +532,33 @@ const INF_SCORE: i32 = 32000;
 const MAX_PHASE: i32 = 24;
 
 #[inline]
+// Was: Führt `mate_score` aus und kapselt einen klar abgegrenzten Engine-Teilschritt.
+// Warum: Hält die Gesamtlogik modular, nachvollziehbar und für Optimierungen isolierbar.
+// Kosten: Laufzeit ist kontextabhängig und wird durch Aufruftiefe/Branching bestimmt.
 fn mate_score(ply: i32) -> i32 {
     MATE_SCORE - ply
 }
 
 #[inline]
+// Was: Führt `is_mate_score` aus und kapselt einen klar abgegrenzten Engine-Teilschritt.
+// Warum: Hält die Gesamtlogik modular, nachvollziehbar und für Optimierungen isolierbar.
+// Kosten: Laufzeit ist kontextabhängig und wird durch Aufruftiefe/Branching bestimmt.
 fn is_mate_score(score: i32) -> bool {
     score.abs() >= MATE_THRESHOLD
 }
 
 #[inline]
+// Was: Führt `clamp_eval` aus und kapselt einen klar abgegrenzten Engine-Teilschritt.
+// Warum: Hält die Gesamtlogik modular, nachvollziehbar und für Optimierungen isolierbar.
+// Kosten: Laufzeit ist kontextabhängig und wird durch Aufruftiefe/Branching bestimmt.
 fn clamp_eval(score: i32) -> i32 {
     score.max(-MATE_THRESHOLD + 1).min(MATE_THRESHOLD - 1)
 }
 
 #[inline]
+// Was: Führt `tt_store_score` aus und kapselt einen klar abgegrenzten Engine-Teilschritt.
+// Warum: Hält die Gesamtlogik modular, nachvollziehbar und für Optimierungen isolierbar.
+// Kosten: Laufzeit ist kontextabhängig und wird durch Aufruftiefe/Branching bestimmt.
 fn tt_store_score(score: i32, ply: i32) -> i32 {
     if score >= MATE_THRESHOLD {
         score + ply
@@ -534,6 +570,9 @@ fn tt_store_score(score: i32, ply: i32) -> i32 {
 }
 
 #[inline]
+// Was: Führt `tt_probe_score` aus und kapselt einen klar abgegrenzten Engine-Teilschritt.
+// Warum: Hält die Gesamtlogik modular, nachvollziehbar und für Optimierungen isolierbar.
+// Kosten: Laufzeit ist kontextabhängig und wird durch Aufruftiefe/Branching bestimmt.
 fn tt_probe_score(score: i32, ply: i32) -> i32 {
     if score >= MATE_THRESHOLD {
         score - ply
@@ -714,6 +753,9 @@ impl Color {
     #[inline]
     // Liefert die Gegenseite der aktuellen Farbe.
     // Hilfreich für Schachprüfungen und Zugrechtwechsel.
+    // Was: Führt `opposite` aus und kapselt einen klar abgegrenzten Engine-Teilschritt.
+    // Warum: Hält die Gesamtlogik modular, nachvollziehbar und für Optimierungen isolierbar.
+    // Kosten: Laufzeit ist kontextabhängig und wird durch Aufruftiefe/Branching bestimmt.
     fn opposite(self) -> Color {
         match self {
             Color::White => Color::Black,
@@ -760,6 +802,9 @@ struct Bitboards {
 }
 
 #[inline]
+// Was: Führt `remove_piece` aus und kapselt einen klar abgegrenzten Engine-Teilschritt.
+// Warum: Hält die Gesamtlogik modular, nachvollziehbar und für Optimierungen isolierbar.
+// Kosten: Laufzeit ist kontextabhängig und wird durch Aufruftiefe/Branching bestimmt.
 fn remove_piece(bits: &mut Bitboards, piece: char, sq: u8) {
     let mask = bb(sq);
     match piece {
@@ -786,6 +831,9 @@ fn remove_piece(bits: &mut Bitboards, piece: char, sq: u8) {
 }
 
 #[inline]
+// Was: Führt `add_piece` aus und kapselt einen klar abgegrenzten Engine-Teilschritt.
+// Warum: Hält die Gesamtlogik modular, nachvollziehbar und für Optimierungen isolierbar.
+// Kosten: Laufzeit ist kontextabhängig und wird durch Aufruftiefe/Branching bestimmt.
 fn add_piece(bits: &mut Bitboards, piece: char, sq: u8) {
     let mask = bb(sq);
     match piece {
@@ -823,6 +871,9 @@ struct Position {
 }
 
 #[inline]
+// Was: Führt `clone_position` aus und kapselt einen klar abgegrenzten Engine-Teilschritt.
+// Warum: Hält die Gesamtlogik modular, nachvollziehbar und für Optimierungen isolierbar.
+// Kosten: Laufzeit ist kontextabhängig und wird durch Aufruftiefe/Branching bestimmt.
 fn clone_position(pos: &Position) -> Position {
     Position {
         board: pos.board,
@@ -842,6 +893,9 @@ fn clone_position(pos: &Position) -> Position {
 // Schneidet einen Ray an der ersten Blocker-Figur ab (vorwärts Richtung).
 // `occ_on_ray` sind nur die Belegungen auf diesem Ray.
 // Das Blockerfeld bleibt enthalten, dahinter wird abgeschnitten.
+// Was: Führt `clip_forward` aus und kapselt einen klar abgegrenzten Engine-Teilschritt.
+// Warum: Hält die Gesamtlogik modular, nachvollziehbar und für Optimierungen isolierbar.
+// Kosten: Laufzeit ist kontextabhängig und wird durch Aufruftiefe/Branching bestimmt.
 fn clip_forward(ray_from_sq: u64, occ_on_ray: u64, table: &[u64; 64]) -> u64 {
     if occ_on_ray == 0 {
         return ray_from_sq;
@@ -854,6 +908,9 @@ fn clip_forward(ray_from_sq: u64, occ_on_ray: u64, table: &[u64; 64]) -> u64 {
 // Schneidet einen Ray an der ersten Blocker-Figur ab (rückwärts Richtung).
 // Nutzt MSB, um den nächsten Blocker „hinter“ dem Start zu finden.
 // Das Blockerfeld bleibt enthalten.
+// Was: Führt `clip_backward` aus und kapselt einen klar abgegrenzten Engine-Teilschritt.
+// Warum: Hält die Gesamtlogik modular, nachvollziehbar und für Optimierungen isolierbar.
+// Kosten: Laufzeit ist kontextabhängig und wird durch Aufruftiefe/Branching bestimmt.
 fn clip_backward(ray_from_sq: u64, occ_on_ray: u64, table: &[u64; 64]) -> u64 {
     if occ_on_ray == 0 {
         return ray_from_sq;
@@ -868,6 +925,9 @@ fn clip_backward(ray_from_sq: u64, occ_on_ray: u64, table: &[u64; 64]) -> u64 {
 #[inline]
 // Ermittelt Läufer-Angriffe von `sq` unter Berücksichtigung der Belegung.
 // Verwendet Rays + Clipping für diagonale Richtungen.
+// Was: Führt `bishop_attacks` aus und kapselt einen klar abgegrenzten Engine-Teilschritt.
+// Warum: Hält die Gesamtlogik modular, nachvollziehbar und für Optimierungen isolierbar.
+// Kosten: Laufzeit ist kontextabhängig und wird durch Aufruftiefe/Branching bestimmt.
 fn bishop_attacks(sq: u8, occ: u64) -> u64 {
     let i = sq as usize;
     let ne = clip_forward(RAY_NE[i], occ & RAY_NE[i], &RAY_NE);
@@ -880,6 +940,9 @@ fn bishop_attacks(sq: u8, occ: u64) -> u64 {
 #[inline]
 // Ermittelt Turm-Angriffe von `sq` unter Berücksichtigung der Belegung.
 // Verwendet Rays + Clipping für horizontale/vertikale Richtungen.
+// Was: Führt `rook_attacks` aus und kapselt einen klar abgegrenzten Engine-Teilschritt.
+// Warum: Hält die Gesamtlogik modular, nachvollziehbar und für Optimierungen isolierbar.
+// Kosten: Laufzeit ist kontextabhängig und wird durch Aufruftiefe/Branching bestimmt.
 fn rook_attacks(sq: u8, occ: u64) -> u64 {
     let i = sq as usize;
     let n = clip_forward(RAY_N[i], occ & RAY_N[i], &RAY_N);
@@ -892,6 +955,9 @@ fn rook_attacks(sq: u8, occ: u64) -> u64 {
 #[inline]
 // Ermittelt Damen-Angriffe als Kombination aus Läufer und Turm.
 // Benötigt nur die Belegung des Boards.
+// Was: Führt `queen_attacks` aus und kapselt einen klar abgegrenzten Engine-Teilschritt.
+// Warum: Hält die Gesamtlogik modular, nachvollziehbar und für Optimierungen isolierbar.
+// Kosten: Laufzeit ist kontextabhängig und wird durch Aufruftiefe/Branching bestimmt.
 fn queen_attacks(sq: u8, occ: u64) -> u64 {
     bishop_attacks(sq, occ) | rook_attacks(sq, occ)
 }
@@ -903,6 +969,9 @@ fn queen_attacks(sq: u8, occ: u64) -> u64 {
 // Bestimmt die Farbe eines Pieces anhand der Groß-/Kleinschreibung.
 // Großbuchstaben = Weiß, Kleinbuchstaben = Schwarz.
 // Wird überall für Farblogik genutzt.
+// Was: Führt `piece_color` aus und kapselt einen klar abgegrenzten Engine-Teilschritt.
+// Warum: Hält die Gesamtlogik modular, nachvollziehbar und für Optimierungen isolierbar.
+// Kosten: Laufzeit ist kontextabhängig und wird durch Aufruftiefe/Branching bestimmt.
 fn piece_color(ch: char) -> Color {
     if ch.is_ascii_uppercase() {
         Color::White
@@ -914,6 +983,9 @@ fn piece_color(ch: char) -> Color {
 // Erzeugt alle Bitboards aus dem Board-Array.
 // Setzt zusätzlich die King-Squares für schnelle Schachprüfungen.
 // Gibt None zurück, wenn ein König fehlt (ungültige Position).
+// Was: Führt `build_bitboards` aus und kapselt einen klar abgegrenzten Engine-Teilschritt.
+// Warum: Hält die Gesamtlogik modular, nachvollziehbar und für Optimierungen isolierbar.
+// Kosten: Laufzeit ist kontextabhängig und wird durch Aufruftiefe/Branching bestimmt.
 fn build_bitboards(board: &[Option<char>; 64]) -> Option<Bitboards> {
     let mut bits = Bitboards {
         white_occ: 0,
@@ -968,6 +1040,9 @@ fn build_bitboards(board: &[Option<char>; 64]) -> Option<Bitboards> {
 // Parst eine komplette FEN in unsere Position-Struktur.
 // Erwartet mind. 4 Felder (Brett, Zugrecht, Rochade, En-passant).
 // Halbzug/Vollzug werden mit Defaults versehen.
+// Was: Führt `parse_fen` aus und kapselt einen klar abgegrenzten Engine-Teilschritt.
+// Warum: Hält die Gesamtlogik modular, nachvollziehbar und für Optimierungen isolierbar.
+// Kosten: Laufzeit ist kontextabhängig und wird durch Aufruftiefe/Branching bestimmt.
 fn parse_fen(fen: &str) -> Option<Position> {
     let parts: Vec<&str> = fen.split_whitespace().collect();
     if parts.len() < 4 {
@@ -1007,6 +1082,9 @@ fn parse_fen(fen: &str) -> Option<Position> {
 // Prüft, ob ein Feld `sq` von der Farbe `by` angegriffen wird.
 // Mischt Pawn-, Knight-, King- und Sliding-Angriffe.
 // Wird für Schach, Rochade und Legalitätsprüfung verwendet.
+// Was: Führt `is_square_attacked` aus und kapselt einen klar abgegrenzten Engine-Teilschritt.
+// Warum: Hält die Gesamtlogik modular, nachvollziehbar und für Optimierungen isolierbar.
+// Kosten: Laufzeit ist kontextabhängig und wird durch Aufruftiefe/Branching bestimmt.
 fn is_square_attacked(pos: &Position, sq: u8, by: Color) -> bool {
     let occ = pos.bb.occ;
     let i = sq as usize;
@@ -1065,6 +1143,9 @@ fn is_square_attacked(pos: &Position, sq: u8, by: Color) -> bool {
 
 // Prüft, ob der König der gegebenen Farbe aktuell im Schach steht.
 // Nutzt die vorab gespeicherte König-Position aus Bitboards.
+// Was: Führt `is_in_check` aus und kapselt einen klar abgegrenzten Engine-Teilschritt.
+// Warum: Hält die Gesamtlogik modular, nachvollziehbar und für Optimierungen isolierbar.
+// Kosten: Laufzeit ist kontextabhängig und wird durch Aufruftiefe/Branching bestimmt.
 fn is_in_check(pos: &Position, color: Color) -> bool {
     let king_sq = match color {
         Color::White => pos.bb.white_king_sq,
@@ -1079,6 +1160,9 @@ fn is_in_check(pos: &Position, color: Color) -> bool {
 // Fügt alle gesetzten Bits als Standardzüge hinzu.
 // `from` ist das Startfeld der Figur, `bb` enthält Ziel-Felder.
 // Spezialzüge (Rochade/EP/Promotion) werden separat behandelt.
+// Was: Führt `push_moves_from_bb` aus und kapselt einen klar abgegrenzten Engine-Teilschritt.
+// Warum: Hält die Gesamtlogik modular, nachvollziehbar und für Optimierungen isolierbar.
+// Kosten: Laufzeit ist kontextabhängig und wird durch Aufruftiefe/Branching bestimmt.
 fn push_moves_from_bb(moves: &mut Vec<Move>, from: u8, mut bb: u64) {
     while bb != 0 {
         let lsb = bb & bb.wrapping_neg();
@@ -1091,6 +1175,9 @@ fn push_moves_from_bb(moves: &mut Vec<Move>, from: u8, mut bb: u64) {
 // Prüft, ob eine kurze Rochade zulässig ist.
 // Bedingungen: Rechte vorhanden, König/Turm korrekt, Felder frei,
 // und keine der König-Durchlauf-Felder im Schach.
+// Was: Führt `can_castle_kingside` aus und kapselt einen klar abgegrenzten Engine-Teilschritt.
+// Warum: Hält die Gesamtlogik modular, nachvollziehbar und für Optimierungen isolierbar.
+// Kosten: Laufzeit ist kontextabhängig und wird durch Aufruftiefe/Branching bestimmt.
 fn can_castle_kingside(pos: &Position, color: Color, from: u8) -> bool {
     match color {
         Color::White => {
@@ -1121,6 +1208,9 @@ fn can_castle_kingside(pos: &Position, color: Color, from: u8) -> bool {
 // Prüft, ob eine lange Rochade zulässig ist.
 // Zusätzliche Bedingung: b-Feld darf belegt sein, aber nicht die Durchlauf-Felder.
 // (Hier prüfen wir: b, c, d müssen leer sein).
+// Was: Führt `can_castle_queenside` aus und kapselt einen klar abgegrenzten Engine-Teilschritt.
+// Warum: Hält die Gesamtlogik modular, nachvollziehbar und für Optimierungen isolierbar.
+// Kosten: Laufzeit ist kontextabhängig und wird durch Aufruftiefe/Branching bestimmt.
 fn can_castle_queenside(pos: &Position, color: Color, from: u8) -> bool {
     match color {
         Color::White => {
@@ -1151,6 +1241,9 @@ fn can_castle_queenside(pos: &Position, color: Color, from: u8) -> bool {
 // Erzeugt alle Bauern-Pseudozüge von einem Feld.
 // Enthält Vorwärtszüge, Doppelzug, Schläge, Promotion und En-passant.
 // Legalitätsprüfung passiert später.
+// Was: Führt `gen_pawn_moves` aus und kapselt einen klar abgegrenzten Engine-Teilschritt.
+// Warum: Hält die Gesamtlogik modular, nachvollziehbar und für Optimierungen isolierbar.
+// Kosten: Laufzeit ist kontextabhängig und wird durch Aufruftiefe/Branching bestimmt.
 fn gen_pawn_moves(pos: &Position, from: u8, color: Color, moves: &mut Vec<Move>) {
     let occ = pos.bb.occ;
     let from_i = from as i16;
@@ -1251,6 +1344,9 @@ fn gen_pawn_moves(pos: &Position, from: u8, color: Color, moves: &mut Vec<Move>)
 // Erzeugt alle Pseudozüge einer Figur auf `from` in `out`.
 // Filtert auf „side to move“ und ergänzt Rochade beim König.
 // Legalitätsprüfung erfolgt separat.
+// Was: Führt `generate_moves_for_piece_into` aus und kapselt einen klar abgegrenzten Engine-Teilschritt.
+// Warum: Hält die Gesamtlogik modular, nachvollziehbar und für Optimierungen isolierbar.
+// Kosten: Laufzeit ist kontextabhängig und wird durch Aufruftiefe/Branching bestimmt.
 fn generate_moves_for_piece_into(pos: &Position, from: u8, out: &mut Vec<Move>) {
     out.clear();
     let idx = from as usize;
@@ -1307,6 +1403,9 @@ fn generate_moves_for_piece_into(pos: &Position, from: u8, out: &mut Vec<Move>) 
 // Wendet einen Zug direkt auf das Board an.
 // Behandelt Sonderzüge (Rochade, En-passant, Promotion).
 // Macht keine Legalitätsprüfung.
+// Was: Führt `apply_move_to_board` aus und kapselt einen klar abgegrenzten Engine-Teilschritt.
+// Warum: Hält die Gesamtlogik modular, nachvollziehbar und für Optimierungen isolierbar.
+// Kosten: Laufzeit ist kontextabhängig und wird durch Aufruftiefe/Branching bestimmt.
 fn apply_move_to_board(board: &mut [Option<char>; 64], mv: Move, color: Color, promotion: Option<char>) {
     let from = mv.from as usize;
     let to = mv.to as usize;
@@ -1364,6 +1463,9 @@ fn apply_move_to_board(board: &mut [Option<char>; 64], mv: Move, color: Color, p
 // Prüft die Legalität eines Zuges:
 // Zug simulieren und sicherstellen, dass der eigene König nicht im Schach steht.
 // Weitere Regeln (z.B. Rochade-Bedingungen) sind bereits im Pseudozug enthalten.
+// Was: Führt `is_move_legal` aus und kapselt einen klar abgegrenzten Engine-Teilschritt.
+// Warum: Hält die Gesamtlogik modular, nachvollziehbar und für Optimierungen isolierbar.
+// Kosten: Laufzeit ist kontextabhängig und wird durch Aufruftiefe/Branching bestimmt.
 fn is_move_legal(pos: &mut Position, mv: Move, color: Color) -> bool {
     if color != pos.side_to_move {
         return false;
@@ -1376,6 +1478,9 @@ fn is_move_legal(pos: &mut Position, mv: Move, color: Color) -> bool {
 
 // Findet einen legalen Zug von `from` nach `to` (inkl. Sonderzugtyp).
 // Wird für `apply_move` genutzt, damit nur gültige Züge übernommen werden.
+// Was: Führt `find_legal_move` aus und kapselt einen klar abgegrenzten Engine-Teilschritt.
+// Warum: Hält die Gesamtlogik modular, nachvollziehbar und für Optimierungen isolierbar.
+// Kosten: Laufzeit ist kontextabhängig und wird durch Aufruftiefe/Branching bestimmt.
 fn find_legal_move(pos: &mut Position, from: u8, to: u8) -> Option<Move> {
     let mut moves: Vec<Move> = Vec::with_capacity(32);
     generate_moves_for_piece_into(pos, from, &mut moves);
@@ -1391,6 +1496,9 @@ fn find_legal_move(pos: &mut Position, from: u8, to: u8) -> Option<Move> {
 // WASM Exports
 // ---------------------------
 #[wasm_bindgen]
+// Was: Führt `set_root_eval_debug` aus und kapselt einen klar abgegrenzten Engine-Teilschritt.
+// Warum: Hält die Gesamtlogik modular, nachvollziehbar und für Optimierungen isolierbar.
+// Kosten: Laufzeit ist kontextabhängig und wird durch Aufruftiefe/Branching bestimmt.
 pub fn set_root_eval_debug(flag: bool) {
     ROOT_EVAL_DEBUG.with(|v| v.set(flag));
 }
@@ -1399,6 +1507,9 @@ pub fn set_root_eval_debug(flag: bool) {
 // Berücksichtigt Schach, Rochade und En-passant.
 // Gibt eine Liste von Feldindizes (0..63) zurück.
 #[wasm_bindgen]
+// Was: Führt `get_valid_moves` aus und kapselt einen klar abgegrenzten Engine-Teilschritt.
+// Warum: Hält die Gesamtlogik modular, nachvollziehbar und für Optimierungen isolierbar.
+// Kosten: Laufzeit ist kontextabhängig und wird durch Aufruftiefe/Branching bestimmt.
 pub fn get_valid_moves(fen: &str, field: u8) -> Vec<u8> {
     // Liefert nur legale Ziele (inkl. Rochade/En-passant)
     let mut pos = match parse_fen(fen) {
@@ -1435,6 +1546,9 @@ pub fn get_valid_moves(fen: &str, field: u8) -> Vec<u8> {
 // Prüft Legalität (inkl. Schach) und lehnt ungültige Züge ab.
 // `promotion` ist optional (Q/R/B/N), Standard ist Queen.
 #[wasm_bindgen]
+// Was: Führt `apply_move` aus und kapselt einen klar abgegrenzten Engine-Teilschritt.
+// Warum: Hält die Gesamtlogik modular, nachvollziehbar und für Optimierungen isolierbar.
+// Kosten: Laufzeit ist kontextabhängig und wird durch Aufruftiefe/Branching bestimmt.
 pub fn apply_move(fen: &str, from: u8, to: u8, promotion: &str) -> String {
     // Illegaler Zug? -> ursprüngliche FEN zurückgeben
     let mut pos = match parse_fen(fen) {
@@ -1548,10 +1662,16 @@ pub fn apply_move(fen: &str, from: u8, to: u8, promotion: &str) -> String {
 // Search (einfaches Alpha-Beta)
 // ---------------------------
 #[inline]
+// Was: Führt `now_ms` aus und kapselt einen klar abgegrenzten Engine-Teilschritt.
+// Warum: Hält die Gesamtlogik modular, nachvollziehbar und für Optimierungen isolierbar.
+// Kosten: Laufzeit ist kontextabhängig und wird durch Aufruftiefe/Branching bestimmt.
 fn now_ms() -> f64 {
     date_now()
 }
 
+// Was: Führt `piece_value` aus und kapselt einen klar abgegrenzten Engine-Teilschritt.
+// Warum: Hält die Gesamtlogik modular, nachvollziehbar und für Optimierungen isolierbar.
+// Kosten: Laufzeit ist kontextabhängig und wird durch Aufruftiefe/Branching bestimmt.
 fn piece_value(piece: char) -> i32 {
     match piece.to_ascii_lowercase() {
         'p' => 100,
@@ -1564,10 +1684,16 @@ fn piece_value(piece: char) -> i32 {
     }
 }
 
+// Was: Führt `blend` aus und kapselt einen klar abgegrenzten Engine-Teilschritt.
+// Warum: Hält die Gesamtlogik modular, nachvollziehbar und für Optimierungen isolierbar.
+// Kosten: Laufzeit ist kontextabhängig und wird durch Aufruftiefe/Branching bestimmt.
 fn blend(mg: i32, eg: i32, phase: i32) -> i32 {
     (mg * phase + eg * (MAX_PHASE - phase)) / MAX_PHASE
 }
 
+// Was: Führt `compute_phase` aus und kapselt einen klar abgegrenzten Engine-Teilschritt.
+// Warum: Hält die Gesamtlogik modular, nachvollziehbar und für Optimierungen isolierbar.
+// Kosten: Laufzeit ist kontextabhängig und wird durch Aufruftiefe/Branching bestimmt.
 fn compute_phase(pos: &Position) -> i32 {
     let mut phase = 0;
     phase += popcnt(pos.bb.wn) * PHASE_VALUES[1];
@@ -1581,6 +1707,9 @@ fn compute_phase(pos: &Position) -> i32 {
     if phase > MAX_PHASE { MAX_PHASE } else { phase }
 }
 
+// Was: Addiert Material- und PST-Beiträge einer Figurenmenge in Midgame/Endgame-Summen.
+// Warum: Entkoppelt die wiederkehrende Stücklisten-Auswertung aus der Haupt-Evaluation und reduziert Duplikate.
+// Kosten: Linear in der Anzahl gesetzter Bits des übergebenen Bitboards (`O(popcnt(bb))`).
 fn add_piece_scores(
     material_mg: &mut i32,
     material_eg: &mut i32,
@@ -1612,6 +1741,9 @@ const SPACE_PAWN_MG: i32 = 5;
 const PASSED_BONUS_MG: [i32; 8] = [0, 5, 10, 20, 30, 40, 60, 0];
 const PASSED_BONUS_EG: [i32; 8] = [0, 10, 20, 40, 60, 80, 120, 0];
 
+// Was: Führt `pawn_features` aus und kapselt einen klar abgegrenzten Engine-Teilschritt.
+// Warum: Hält die Gesamtlogik modular, nachvollziehbar und für Optimierungen isolierbar.
+// Kosten: Laufzeit ist kontextabhängig und wird durch Aufruftiefe/Branching bestimmt.
 fn pawn_features(pos: &Position, color: Color) -> (i32, i32) {
     let pawns = if color == Color::White { pos.bb.wp } else { pos.bb.bp };
     let enemy_pawns = if color == Color::White { pos.bb.bp } else { pos.bb.wp };
@@ -1671,6 +1803,9 @@ fn pawn_features(pos: &Position, color: Color) -> (i32, i32) {
     (mg, eg)
 }
 
+// Was: Führt `pawn_structure_score` aus und kapselt einen klar abgegrenzten Engine-Teilschritt.
+// Warum: Hält die Gesamtlogik modular, nachvollziehbar und für Optimierungen isolierbar.
+// Kosten: Laufzeit ist kontextabhängig und wird durch Aufruftiefe/Branching bestimmt.
 fn pawn_structure_score(pos: &Position) -> (i32, i32) {
     let (w_mg, w_eg) = pawn_features(pos, Color::White);
     let (b_mg, b_eg) = pawn_features(pos, Color::Black);
@@ -1684,6 +1819,9 @@ const PAWN_SHIELD_EG: i32 = 4;
 const PAWN_FILE_HALF_OPEN_MG: i32 = 6;
 const PAWN_FILE_OPEN_MG: i32 = 10;
 
+// Was: Führt `attacks_for_color` aus und kapselt einen klar abgegrenzten Engine-Teilschritt.
+// Warum: Hält die Gesamtlogik modular, nachvollziehbar und für Optimierungen isolierbar.
+// Kosten: Laufzeit ist kontextabhängig und wird durch Aufruftiefe/Branching bestimmt.
 fn attacks_for_color(pos: &Position, color: Color) -> u64 {
     let occ = pos.bb.occ;
     let (pawns, knights, bishops, rooks, queens, king_sq) = match color {
@@ -1725,6 +1863,9 @@ fn attacks_for_color(pos: &Position, color: Color) -> u64 {
     attacks
 }
 
+// Was: Führt `king_safety_for` aus und kapselt einen klar abgegrenzten Engine-Teilschritt.
+// Warum: Hält die Gesamtlogik modular, nachvollziehbar und für Optimierungen isolierbar.
+// Kosten: Laufzeit ist kontextabhängig und wird durch Aufruftiefe/Branching bestimmt.
 fn king_safety_for(pos: &Position, color: Color) -> (i32, i32) {
     let king_sq = if color == Color::White { pos.bb.white_king_sq } else { pos.bb.black_king_sq };
     let enemy_attacks = attacks_for_color(pos, color.opposite());
@@ -1766,6 +1907,9 @@ fn king_safety_for(pos: &Position, color: Color) -> (i32, i32) {
     (mg, eg)
 }
 
+// Was: Führt `king_safety_score` aus und kapselt einen klar abgegrenzten Engine-Teilschritt.
+// Warum: Hält die Gesamtlogik modular, nachvollziehbar und für Optimierungen isolierbar.
+// Kosten: Laufzeit ist kontextabhängig und wird durch Aufruftiefe/Branching bestimmt.
 fn king_safety_score(pos: &Position) -> (i32, i32) {
     let (w_mg, w_eg) = king_safety_for(pos, Color::White);
     let (b_mg, b_eg) = king_safety_for(pos, Color::Black);
@@ -1782,6 +1926,9 @@ struct EvalBreakdown {
     total: i32,
 }
 
+// Was: Führt `negate_breakdown` aus und kapselt einen klar abgegrenzten Engine-Teilschritt.
+// Warum: Hält die Gesamtlogik modular, nachvollziehbar und für Optimierungen isolierbar.
+// Kosten: Laufzeit ist kontextabhängig und wird durch Aufruftiefe/Branching bestimmt.
 fn negate_breakdown(bd: EvalBreakdown) -> EvalBreakdown {
     EvalBreakdown {
         material: -bd.material,
@@ -1793,6 +1940,9 @@ fn negate_breakdown(bd: EvalBreakdown) -> EvalBreakdown {
     }
 }
 
+// Was: Führt `evaluate_breakdown` aus und kapselt einen klar abgegrenzten Engine-Teilschritt.
+// Warum: Hält die Gesamtlogik modular, nachvollziehbar und für Optimierungen isolierbar.
+// Kosten: Laufzeit ist kontextabhängig und wird durch Aufruftiefe/Branching bestimmt.
 fn evaluate_breakdown(pos: &Position) -> EvalBreakdown {
     let mut material_mg = 0;
     let mut material_eg = 0;
@@ -1837,6 +1987,9 @@ fn evaluate_breakdown(pos: &Position) -> EvalBreakdown {
     }
 }
 
+// Was: Führt `evaluate_fast` aus und kapselt einen klar abgegrenzten Engine-Teilschritt.
+// Warum: Hält die Gesamtlogik modular, nachvollziehbar und für Optimierungen isolierbar.
+// Kosten: Laufzeit ist kontextabhängig und wird durch Aufruftiefe/Branching bestimmt.
 fn evaluate_fast(pos: &Position) -> i32 {
     let mut material_mg = 0;
     let mut material_eg = 0;
@@ -1867,10 +2020,16 @@ fn evaluate_fast(pos: &Position) -> i32 {
     total
 }
 
+// Was: Führt `evaluate` aus und kapselt einen klar abgegrenzten Engine-Teilschritt.
+// Warum: Hält die Gesamtlogik modular, nachvollziehbar und für Optimierungen isolierbar.
+// Kosten: Laufzeit ist kontextabhängig und wird durch Aufruftiefe/Branching bestimmt.
 fn evaluate(pos: &Position) -> i32 {
     evaluate_breakdown(pos).total
 }
 
+// Was: Führt `root_eval_breakdown_json` aus und kapselt einen klar abgegrenzten Engine-Teilschritt.
+// Warum: Hält die Gesamtlogik modular, nachvollziehbar und für Optimierungen isolierbar.
+// Kosten: Laufzeit ist kontextabhängig und wird durch Aufruftiefe/Branching bestimmt.
 fn root_eval_breakdown_json(pos: &mut Position) -> String {
     let mut moves = Vec::new();
     generate_legal_moves_into(pos, &mut moves);
@@ -1900,6 +2059,9 @@ fn root_eval_breakdown_json(pos: &mut Position) -> String {
     out
 }
 
+// Was: Führt `generate_legal_moves_into` aus und kapselt einen klar abgegrenzten Engine-Teilschritt.
+// Warum: Hält die Gesamtlogik modular, nachvollziehbar und für Optimierungen isolierbar.
+// Kosten: Laufzeit ist kontextabhängig und wird durch Aufruftiefe/Branching bestimmt.
 fn generate_legal_moves_into(pos: &mut Position, out: &mut Vec<(Move, Option<char>)>) {
     // Erst pseudo-legale Züge je Figur erzeugen, dann per `is_move_legal`
     // auf echte legale Züge filtern. Promotionen werden in 4 Varianten
@@ -1922,14 +2084,18 @@ fn generate_legal_moves_into(pos: &mut Position, out: &mut Vec<(Move, Option<cha
     }
 }
 
+// Was: Führt `generate_legal_moves` aus und kapselt einen klar abgegrenzten Engine-Teilschritt.
+// Warum: Hält die Gesamtlogik modular, nachvollziehbar und für Optimierungen isolierbar.
+// Kosten: Laufzeit ist kontextabhängig und wird durch Aufruftiefe/Branching bestimmt.
 fn generate_legal_moves(pos: &mut Position) -> Vec<(Move, Option<char>)> {
     let mut out = Vec::new();
     generate_legal_moves_into(pos, &mut out);
     out
 }
 
-// Wendet einen Zug funktional (ohne Seiteneffekte am Original) auf Position + Hash an.
-// Rückgabe: neue Position und der inkrementell aktualisierte Zobrist-Hash.
+// Was: Wendet einen Zug funktional (ohne Seiteneffekte am Original) auf Position + Hash an.
+// Warum: Erlaubt sichere Probe-Berechnungen (z. B. Hilfsroutinen/Validierung), ohne den Suchzustand zu verändern.
+// Kosten: Konstant pro Zug mit mehreren kleinen Zweigen für Spezialfälle (En Passant, Rochade, Promotion).
 fn apply_move_to_position(
     pos: &Position,
     mv: Move,
@@ -2110,6 +2276,9 @@ struct Undo {
 
 // Führt einen Zug in-place aus und liefert Undo-Daten für die Rücknahme.
 // Zentral für Suchknoten, da hier keine kompletten Positionskopien entstehen.
+// Was: Führt `make_move_in_place` aus und kapselt einen klar abgegrenzten Engine-Teilschritt.
+// Warum: Hält die Gesamtlogik modular, nachvollziehbar und für Optimierungen isolierbar.
+// Kosten: Laufzeit ist kontextabhängig und wird durch Aufruftiefe/Branching bestimmt.
 fn make_move_in_place(pos: &mut Position, mv: Move, promotion: Option<char>) -> Option<Undo> {
     // Warum in-place + Undo?
     // In der Suche wird diese Funktion millionenfach aufgerufen.
@@ -2253,6 +2422,9 @@ fn make_move_in_place(pos: &mut Position, mv: Move, promotion: Option<char>) -> 
 }
 
 // Nimmt einen zuvor ausgeführten Zug per Undo deterministisch zurück.
+// Was: Führt `unmake_move_in_place` aus und kapselt einen klar abgegrenzten Engine-Teilschritt.
+// Warum: Hält die Gesamtlogik modular, nachvollziehbar und für Optimierungen isolierbar.
+// Kosten: Laufzeit ist kontextabhängig und wird durch Aufruftiefe/Branching bestimmt.
 fn unmake_move_in_place(pos: &mut Position, mv: Move, _promotion: Option<char>, undo: Undo) {
     // Warum deterministisches Unmake?
     // Suchknoten dürfen keine schleichenden Seiteneffekte hinterlassen.
@@ -2296,8 +2468,9 @@ fn unmake_move_in_place(pos: &mut Position, mv: Move, _promotion: Option<char>, 
     add_piece(&mut pos.bb, undo.moved_piece, mv.from);
 }
 
-// Inkrementelle Hash-Aktualisierung passend zu make_move_in_place.
-// Dadurch bleibt TT-Adressierung ohne teuren Full-Rehash stabil.
+// Was: Aktualisiert den Zobrist-Hash inkrementell passend zu `make_move_in_place`.
+// Warum: Hält TT-Adressierung stabil, ohne pro Knoten einen teuren Full-Rehash des gesamten Bretts auszuführen.
+// Kosten: Konstant mit wenigen XOR-Operationen und optionalen Spezialfallzweigen.
 fn update_hash_after_move(
     hash: u64,
     zob: &Zobrist,
@@ -2351,6 +2524,9 @@ fn update_hash_after_move(
 }
 
 // Interne Zugrepräsentation in UCI-Text umwandeln (z. B. "e2e4", "a7a8q").
+// Was: Führt `move_to_uci` aus und kapselt einen klar abgegrenzten Engine-Teilschritt.
+// Warum: Hält die Gesamtlogik modular, nachvollziehbar und für Optimierungen isolierbar.
+// Kosten: Laufzeit ist kontextabhängig und wird durch Aufruftiefe/Branching bestimmt.
 fn move_to_uci(mv: Move, promotion: Option<char>) -> String {
     let mut out = String::new();
     out.push_str(&field_to_lan(mv.from));
@@ -2363,6 +2539,9 @@ fn move_to_uci(mv: Move, promotion: Option<char>) -> String {
 
 // Liefert bei Capture-Zügen das tatsächlich geschlagene Feld/Piece
 // (inkl. korrektem EP-Capture-Feld).
+// Was: Führt `capture_info` aus und kapselt einen klar abgegrenzten Engine-Teilschritt.
+// Warum: Hält die Gesamtlogik modular, nachvollziehbar und für Optimierungen isolierbar.
+// Kosten: Laufzeit ist kontextabhängig und wird durch Aufruftiefe/Branching bestimmt.
 fn capture_info(pos: &Position, mv: Move) -> Option<(u8, char)> {
     match mv.kind {
         MoveKind::EnPassant => {
@@ -2378,16 +2557,25 @@ fn capture_info(pos: &Position, mv: Move) -> Option<(u8, char)> {
 }
 
 // Vereinfachter Capture-Check über `capture_info`.
+// Was: Führt `move_is_capture` aus und kapselt einen klar abgegrenzten Engine-Teilschritt.
+// Warum: Hält die Gesamtlogik modular, nachvollziehbar und für Optimierungen isolierbar.
+// Kosten: Laufzeit ist kontextabhängig und wird durch Aufruftiefe/Branching bestimmt.
 fn move_is_capture(pos: &Position, mv: Move) -> bool {
     capture_info(pos, mv).is_some()
 }
 
 // Kompakter Key für Killer-/History-Heuristiken.
+// Was: Führt `move_key` aus und kapselt einen klar abgegrenzten Engine-Teilschritt.
+// Warum: Hält die Gesamtlogik modular, nachvollziehbar und für Optimierungen isolierbar.
+// Kosten: Laufzeit ist kontextabhängig und wird durch Aufruftiefe/Branching bestimmt.
 fn move_key(mv: Move, promo: Option<char>) -> (u8, u8, u8) {
     (mv.from, mv.to, encode_promo(promo))
 }
 
 #[inline]
+// Was: Führt `see_piece_value` aus und kapselt einen klar abgegrenzten Engine-Teilschritt.
+// Warum: Hält die Gesamtlogik modular, nachvollziehbar und für Optimierungen isolierbar.
+// Kosten: Laufzeit ist kontextabhängig und wird durch Aufruftiefe/Branching bestimmt.
 fn see_piece_value(piece: char) -> i32 {
     match piece.to_ascii_lowercase() {
         'p' => 100,
@@ -2401,6 +2589,9 @@ fn see_piece_value(piece: char) -> i32 {
 }
 
 #[inline]
+// Was: Führt `pawn_attackers_to` aus und kapselt einen klar abgegrenzten Engine-Teilschritt.
+// Warum: Hält die Gesamtlogik modular, nachvollziehbar und für Optimierungen isolierbar.
+// Kosten: Laufzeit ist kontextabhängig und wird durch Aufruftiefe/Branching bestimmt.
 fn pawn_attackers_to(sq: u8, side: Color) -> u64 {
     let target = bb(sq);
     match side {
@@ -2410,6 +2601,9 @@ fn pawn_attackers_to(sq: u8, side: Color) -> u64 {
 }
 
 #[inline]
+// Was: Führt `attackers_to_square` aus und kapselt einen klar abgegrenzten Engine-Teilschritt.
+// Warum: Hält die Gesamtlogik modular, nachvollziehbar und für Optimierungen isolierbar.
+// Kosten: Laufzeit ist kontextabhängig und wird durch Aufruftiefe/Branching bestimmt.
 fn attackers_to_square(pos: &Position, sq: u8, occ: u64, side: Color) -> u64 {
     let (pawns, knights, bishops, rooks, queens, king) = match side {
         Color::White => (pos.bb.wp, pos.bb.wn, pos.bb.wb, pos.bb.wr, pos.bb.wq, pos.bb.wk),
@@ -2426,6 +2620,9 @@ fn attackers_to_square(pos: &Position, sq: u8, occ: u64, side: Color) -> u64 {
 }
 
 #[inline]
+// Was: Führt `least_valuable_attacker` aus und kapselt einen klar abgegrenzten Engine-Teilschritt.
+// Warum: Hält die Gesamtlogik modular, nachvollziehbar und für Optimierungen isolierbar.
+// Kosten: Laufzeit ist kontextabhängig und wird durch Aufruftiefe/Branching bestimmt.
 fn least_valuable_attacker(pos: &Position, sq: u8, occ: u64, side: Color) -> Option<(u8, i32)> {
     let attackers = attackers_to_square(pos, sq, occ, side);
     if attackers == 0 {
@@ -2471,6 +2668,9 @@ fn least_valuable_attacker(pos: &Position, sq: u8, occ: u64, side: Color) -> Opt
     None
 }
 
+// Was: Führt `see` aus und kapselt einen klar abgegrenzten Engine-Teilschritt.
+// Warum: Hält die Gesamtlogik modular, nachvollziehbar und für Optimierungen isolierbar.
+// Kosten: Laufzeit ist kontextabhängig und wird durch Aufruftiefe/Branching bestimmt.
 fn see(pos: &Position, mv: Move, promo: Option<char>) -> i32 {
     // SEE (Static Exchange Evaluation):
     // simuliert rein materialbasiert die Schlagabfolge auf dem Zielfeld,
@@ -2538,6 +2738,9 @@ fn see(pos: &Position, mv: Move, promo: Option<char>) -> i32 {
     gain[0]
 }
 
+// Was: Führt `is_quiet_move` aus und kapselt einen klar abgegrenzten Engine-Teilschritt.
+// Warum: Hält die Gesamtlogik modular, nachvollziehbar und für Optimierungen isolierbar.
+// Kosten: Laufzeit ist kontextabhängig und wird durch Aufruftiefe/Branching bestimmt.
 fn is_quiet_move(pos: &Position, mv: Move, promo: Option<char>) -> bool {
     if let MoveKind::Promotion = mv.kind {
         return false;
@@ -2549,6 +2752,9 @@ fn is_quiet_move(pos: &Position, mv: Move, promo: Option<char>) -> bool {
 }
 
 // Killer-Heuristik: merkt sich je Ply die besten fail-high Quiet-Moves.
+// Was: Führt `update_killers` aus und kapselt einen klar abgegrenzten Engine-Teilschritt.
+// Warum: Hält die Gesamtlogik modular, nachvollziehbar und für Optimierungen isolierbar.
+// Kosten: Laufzeit ist kontextabhängig und wird durch Aufruftiefe/Branching bestimmt.
 fn update_killers(ctx: &mut SearchContext, ply: i32, key: (u8, u8, u8)) {
     if ply < 0 {
         return;
@@ -2565,6 +2771,9 @@ fn update_killers(ctx: &mut SearchContext, ply: i32, key: (u8, u8, u8)) {
 }
 
 // History-Heuristik: verstärkt Quiet-Moves, die auf tieferen Ebenen gut waren.
+// Was: Führt `update_history_heur` aus und kapselt einen klar abgegrenzten Engine-Teilschritt.
+// Warum: Hält die Gesamtlogik modular, nachvollziehbar und für Optimierungen isolierbar.
+// Kosten: Laufzeit ist kontextabhängig und wird durch Aufruftiefe/Branching bestimmt.
 fn update_history_heur(ctx: &mut SearchContext, color: Color, from: u8, to: u8, depth: u32) {
     let c = if color == Color::White { 0 } else { 1 };
     let entry = &mut ctx.history_heur[c][from as usize][to as usize];
@@ -2573,6 +2782,9 @@ fn update_history_heur(ctx: &mut SearchContext, color: Color, from: u8, to: u8, 
 }
 
 #[inline]
+// Was: Führt `has_non_pawn_material` aus und kapselt einen klar abgegrenzten Engine-Teilschritt.
+// Warum: Hält die Gesamtlogik modular, nachvollziehbar und für Optimierungen isolierbar.
+// Kosten: Laufzeit ist kontextabhängig und wird durch Aufruftiefe/Branching bestimmt.
 fn has_non_pawn_material(pos: &Position, color: Color) -> bool {
     match color {
         Color::White => (pos.bb.wn | pos.bb.wb | pos.bb.wr | pos.bb.wq) != 0,
@@ -2581,6 +2793,9 @@ fn has_non_pawn_material(pos: &Position, color: Color) -> bool {
 }
 
 #[inline]
+// Was: Führt `lmr_reduction` aus und kapselt einen klar abgegrenzten Engine-Teilschritt.
+// Warum: Hält die Gesamtlogik modular, nachvollziehbar und für Optimierungen isolierbar.
+// Kosten: Laufzeit ist kontextabhängig und wird durch Aufruftiefe/Branching bestimmt.
 fn lmr_reduction(depth: u32, move_index: usize) -> u32 {
     // Warum LMR stufenweise?
     // Späte, ruhige Züge sind statistisch seltener best. Daher dort
@@ -2608,6 +2823,9 @@ struct MoveOrderScratch {
 }
 
 impl MoveOrderScratch {
+    // Was: Führt `new` aus und kapselt einen klar abgegrenzten Engine-Teilschritt.
+    // Warum: Hält die Gesamtlogik modular, nachvollziehbar und für Optimierungen isolierbar.
+    // Kosten: Laufzeit ist kontextabhängig und wird durch Aufruftiefe/Branching bestimmt.
     fn new() -> Self {
         MoveOrderScratch {
             captures: Vec::new(),
@@ -2617,6 +2835,9 @@ impl MoveOrderScratch {
     }
 }
 
+// Was: Führt `capture_score` aus und kapselt einen klar abgegrenzten Engine-Teilschritt.
+// Warum: Hält die Gesamtlogik modular, nachvollziehbar und für Optimierungen isolierbar.
+// Kosten: Laufzeit ist kontextabhängig und wird durch Aufruftiefe/Branching bestimmt.
 fn capture_score(pos: &Position, mv: Move, promo: Option<char>) -> i32 {
     // Warum SEE in der Capture-Bewertung?
     // MVV-LVA allein überschätzt oft "giftige" Captures.
@@ -2639,8 +2860,9 @@ fn capture_score(pos: &Position, mv: Move, promo: Option<char>) -> i32 {
     }
 }
 
-// Sortiert Züge nach Hash/PV, Captures(SEE), Killern, History-Heuristik.
-// Ziel: früh möglichst starke Kandidaten testen -> bessere Alpha-Beta-Cuts.
+// Was: Sortiert Züge nach Hash/PV, Captures (SEE), Killer-Moves und History-Heuristik.
+// Warum: Gute Zugreihenfolge erhöht die Wahrscheinlichkeit früher Alpha-Beta-Cutoffs und senkt die Knotenzahl.
+// Kosten: Dominiert von den lokalen Sortierungen; pro Knoten moderat und durch bessere Pruning-Quote meist amortisiert.
 fn order_moves_in_place(
     pos: &Position,
     moves: &mut Vec<(Move, Option<char>)>,
@@ -2738,6 +2960,9 @@ fn order_moves_in_place(
 
 // Erzeugt nur "taktische" Züge für Quiescence:
 // Captures + Promotions (keine ruhigen Züge).
+// Was: Führt `generate_tactical_moves_into` aus und kapselt einen klar abgegrenzten Engine-Teilschritt.
+// Warum: Hält die Gesamtlogik modular, nachvollziehbar und für Optimierungen isolierbar.
+// Kosten: Laufzeit ist kontextabhängig und wird durch Aufruftiefe/Branching bestimmt.
 fn generate_tactical_moves_into(pos: &mut Position, out: &mut Vec<(Move, Option<char>)>) {
     out.clear();
     let mut piece_moves: Vec<Move> = Vec::with_capacity(32);
@@ -2764,6 +2989,9 @@ fn generate_tactical_moves_into(pos: &mut Position, out: &mut Vec<(Move, Option<
     }
 }
 
+// Was: Führt `generate_tactical_moves` aus und kapselt einen klar abgegrenzten Engine-Teilschritt.
+// Warum: Hält die Gesamtlogik modular, nachvollziehbar und für Optimierungen isolierbar.
+// Kosten: Laufzeit ist kontextabhängig und wird durch Aufruftiefe/Branching bestimmt.
 fn generate_tactical_moves(pos: &mut Position) -> Vec<(Move, Option<char>)> {
     let mut out = Vec::new();
     generate_tactical_moves_into(pos, &mut out);
@@ -2773,6 +3001,9 @@ fn generate_tactical_moves(pos: &mut Position) -> Vec<(Move, Option<char>)> {
 // ---------------------------
 // Zobrist + TT
 // ---------------------------
+// Was: Führt `splitmix64` aus und kapselt einen klar abgegrenzten Engine-Teilschritt.
+// Warum: Hält die Gesamtlogik modular, nachvollziehbar und für Optimierungen isolierbar.
+// Kosten: Laufzeit ist kontextabhängig und wird durch Aufruftiefe/Branching bestimmt.
 fn splitmix64(seed: &mut u64) -> u64 {
     *seed = seed.wrapping_add(0x9E3779B97F4A7C15);
     let mut z = *seed;
@@ -2791,6 +3022,9 @@ struct Zobrist {
 }
 
 impl Zobrist {
+    // Was: Führt `new` aus und kapselt einen klar abgegrenzten Engine-Teilschritt.
+    // Warum: Hält die Gesamtlogik modular, nachvollziehbar und für Optimierungen isolierbar.
+    // Kosten: Laufzeit ist kontextabhängig und wird durch Aufruftiefe/Branching bestimmt.
     fn new() -> Zobrist {
         let mut seed = 0xC0FFEE_u64 ^ 0x9E3779B97F4A7C15;
         let mut piece_sq = [[0u64; 64]; 12];
@@ -2817,6 +3051,9 @@ thread_local! {
     static ZOBRIST_TABLE: Zobrist = Zobrist::new();
 }
 
+// Was: Führt `piece_index` aus und kapselt einen klar abgegrenzten Engine-Teilschritt.
+// Warum: Hält die Gesamtlogik modular, nachvollziehbar und für Optimierungen isolierbar.
+// Kosten: Laufzeit ist kontextabhängig und wird durch Aufruftiefe/Branching bestimmt.
 fn piece_index(ch: char) -> Option<usize> {
     match ch {
         'P' => Some(0),
@@ -2835,6 +3072,9 @@ fn piece_index(ch: char) -> Option<usize> {
     }
 }
 
+// Was: Führt `compute_hash` aus und kapselt einen klar abgegrenzten Engine-Teilschritt.
+// Warum: Hält die Gesamtlogik modular, nachvollziehbar und für Optimierungen isolierbar.
+// Kosten: Laufzeit ist kontextabhängig und wird durch Aufruftiefe/Branching bestimmt.
 fn compute_hash(pos: &Position, zob: &Zobrist) -> u64 {
     let mut h = 0u64;
     for sq in 0..64 {
@@ -2874,6 +3114,9 @@ struct TTEntry {
 }
 
 impl Default for TTEntry {
+    // Was: Führt `default` aus und kapselt einen klar abgegrenzten Engine-Teilschritt.
+    // Warum: Hält die Gesamtlogik modular, nachvollziehbar und für Optimierungen isolierbar.
+    // Kosten: Laufzeit ist kontextabhängig und wird durch Aufruftiefe/Branching bestimmt.
     fn default() -> Self {
         TTEntry {
             key: 0,
@@ -2897,6 +3140,9 @@ struct TT {
 }
 
 impl TT {
+    // Was: Führt `new` aus und kapselt einen klar abgegrenzten Engine-Teilschritt.
+    // Warum: Hält die Gesamtlogik modular, nachvollziehbar und für Optimierungen isolierbar.
+    // Kosten: Laufzeit ist kontextabhängig und wird durch Aufruftiefe/Branching bestimmt.
     fn new(tt_mb: u32) -> Option<TT> {
         if tt_mb == 0 {
             return None;
@@ -2926,6 +3172,9 @@ impl TT {
         Some(TT { entries, mask: buckets - 1 })
     }
 
+    // Was: Führt `probe` aus und kapselt einen klar abgegrenzten Engine-Teilschritt.
+    // Warum: Hält die Gesamtlogik modular, nachvollziehbar und für Optimierungen isolierbar.
+    // Kosten: Laufzeit ist kontextabhängig und wird durch Aufruftiefe/Branching bestimmt.
     fn probe(&self, key: u64) -> Option<TTEntry> {
         if self.entries.is_empty() {
             return None;
@@ -2944,6 +3193,9 @@ impl TT {
         None
     }
 
+    // Was: Führt `store` aus und kapselt einen klar abgegrenzten Engine-Teilschritt.
+    // Warum: Hält die Gesamtlogik modular, nachvollziehbar und für Optimierungen isolierbar.
+    // Kosten: Laufzeit ist kontextabhängig und wird durch Aufruftiefe/Branching bestimmt.
     fn store(&mut self, key: u64, depth: u32, value: i32, bound: u8, best: Option<(Move, Option<char>)>, gen: u8) {
         if self.entries.is_empty() {
             return;
@@ -3003,6 +3255,9 @@ impl TT {
     }
 }
 
+// Was: Führt `encode_promo` aus und kapselt einen klar abgegrenzten Engine-Teilschritt.
+// Warum: Hält die Gesamtlogik modular, nachvollziehbar und für Optimierungen isolierbar.
+// Kosten: Laufzeit ist kontextabhängig und wird durch Aufruftiefe/Branching bestimmt.
 fn encode_promo(promo: Option<char>) -> u8 {
     match promo.map(|c| c.to_ascii_lowercase()) {
         Some('q') => 1,
@@ -3013,6 +3268,9 @@ fn encode_promo(promo: Option<char>) -> u8 {
     }
 }
 
+// Was: Führt `decode_promo` aus und kapselt einen klar abgegrenzten Engine-Teilschritt.
+// Warum: Hält die Gesamtlogik modular, nachvollziehbar und für Optimierungen isolierbar.
+// Kosten: Laufzeit ist kontextabhängig und wird durch Aufruftiefe/Branching bestimmt.
 fn decode_promo(code: u8) -> Option<char> {
     match code {
         1 => Some('q'),
@@ -3023,6 +3281,9 @@ fn decode_promo(code: u8) -> Option<char> {
     }
 }
 
+// Was: Führt `entry_best_move` aus und kapselt einen klar abgegrenzten Engine-Teilschritt.
+// Warum: Hält die Gesamtlogik modular, nachvollziehbar und für Optimierungen isolierbar.
+// Kosten: Laufzeit ist kontextabhängig und wird durch Aufruftiefe/Branching bestimmt.
 fn entry_best_move(entry: TTEntry) -> Option<(u8, u8, Option<char>)> {
     if entry.best_from == 0 && entry.best_to == 0 && entry.best_promo == 0 {
         None
@@ -3032,6 +3293,9 @@ fn entry_best_move(entry: TTEntry) -> Option<(u8, u8, Option<char>)> {
 }
 
 #[inline]
+// Was: Führt `tt_cutoff_value` aus und kapselt einen klar abgegrenzten Engine-Teilschritt.
+// Warum: Hält die Gesamtlogik modular, nachvollziehbar und für Optimierungen isolierbar.
+// Kosten: Laufzeit ist kontextabhängig und wird durch Aufruftiefe/Branching bestimmt.
 fn tt_cutoff_value(entry: TTEntry, depth: u32, alpha: i32, beta: i32, ply: i32) -> Option<i32> {
     if (entry.depth as u32) < depth {
         return None;
@@ -3059,6 +3323,9 @@ struct TTState {
 }
 
 impl TTState {
+    // Was: Führt `new` aus und kapselt einen klar abgegrenzten Engine-Teilschritt.
+    // Warum: Hält die Gesamtlogik modular, nachvollziehbar und für Optimierungen isolierbar.
+    // Kosten: Laufzeit ist kontextabhängig und wird durch Aufruftiefe/Branching bestimmt.
     fn new() -> Self {
         TTState {
             mb: 0,
@@ -3116,6 +3383,9 @@ struct SearchContext {
 }
 
 #[inline]
+// Was: Führt `history_count` aus und kapselt einen klar abgegrenzten Engine-Teilschritt.
+// Warum: Hält die Gesamtlogik modular, nachvollziehbar und für Optimierungen isolierbar.
+// Kosten: Laufzeit ist kontextabhängig und wird durch Aufruftiefe/Branching bestimmt.
 fn history_count(ctx: &SearchContext, hash: u64, halfmove: u32) -> u8 {
     let len = ctx.history.len();
     if len == 0 {
@@ -3144,16 +3414,25 @@ fn history_count(ctx: &SearchContext, hash: u64, halfmove: u32) -> u8 {
 }
 
 #[inline]
+// Was: Führt `history_push` aus und kapselt einen klar abgegrenzten Engine-Teilschritt.
+// Warum: Hält die Gesamtlogik modular, nachvollziehbar und für Optimierungen isolierbar.
+// Kosten: Laufzeit ist kontextabhängig und wird durch Aufruftiefe/Branching bestimmt.
 fn history_push(ctx: &mut SearchContext, hash: u64) {
     ctx.history.push(hash);
 }
 
 #[inline]
+// Was: Führt `history_pop` aus und kapselt einen klar abgegrenzten Engine-Teilschritt.
+// Warum: Hält die Gesamtlogik modular, nachvollziehbar und für Optimierungen isolierbar.
+// Kosten: Laufzeit ist kontextabhängig und wird durch Aufruftiefe/Branching bestimmt.
 fn history_pop(ctx: &mut SearchContext) {
     let _ = ctx.history.pop();
 }
 
 #[inline]
+// Was: Führt `emit_progress_at` aus und kapselt einen klar abgegrenzten Engine-Teilschritt.
+// Warum: Hält die Gesamtlogik modular, nachvollziehbar und für Optimierungen isolierbar.
+// Kosten: Laufzeit ist kontextabhängig und wird durch Aufruftiefe/Branching bestimmt.
 fn emit_progress_at(ctx: &mut SearchContext, now: f64, force: bool) {
     if !force && (now - ctx.last_progress_emit_ms) < ctx.progress_emit_interval_ms {
         return;
@@ -3170,12 +3449,18 @@ fn emit_progress_at(ctx: &mut SearchContext, now: f64, force: bool) {
 }
 
 #[inline]
+// Was: Führt `emit_progress` aus und kapselt einen klar abgegrenzten Engine-Teilschritt.
+// Warum: Hält die Gesamtlogik modular, nachvollziehbar und für Optimierungen isolierbar.
+// Kosten: Laufzeit ist kontextabhängig und wird durch Aufruftiefe/Branching bestimmt.
 fn emit_progress(ctx: &mut SearchContext, force: bool) {
     let now = now_ms();
     emit_progress_at(ctx, now, force);
 }
 
 #[inline]
+// Was: Führt `should_stop` aus und kapselt einen klar abgegrenzten Engine-Teilschritt.
+// Warum: Hält die Gesamtlogik modular, nachvollziehbar und für Optimierungen isolierbar.
+// Kosten: Laufzeit ist kontextabhängig und wird durch Aufruftiefe/Branching bestimmt.
 fn should_stop(ctx: &mut SearchContext) -> bool {
     // Zeitprüfung nur in Intervallen, um Overhead gering zu halten.
     // Gleichzeitig in diesem Takt Progress-Events zur UI schicken.
@@ -3203,6 +3488,9 @@ fn should_stop(ctx: &mut SearchContext) -> bool {
     false
 }
 
+// Was: Führt `take_move_buf` aus und kapselt einen klar abgegrenzten Engine-Teilschritt.
+// Warum: Hält die Gesamtlogik modular, nachvollziehbar und für Optimierungen isolierbar.
+// Kosten: Laufzeit ist kontextabhängig und wird durch Aufruftiefe/Branching bestimmt.
 fn take_move_buf(ctx: &mut SearchContext, ply: i32) -> Vec<(Move, Option<char>)> {
     let idx = if ply < 0 { 0 } else { ply as usize };
     if idx >= ctx.move_buf.len() {
@@ -3211,6 +3499,9 @@ fn take_move_buf(ctx: &mut SearchContext, ply: i32) -> Vec<(Move, Option<char>)>
     std::mem::take(&mut ctx.move_buf[idx])
 }
 
+// Was: Führt `restore_move_buf` aus und kapselt einen klar abgegrenzten Engine-Teilschritt.
+// Warum: Hält die Gesamtlogik modular, nachvollziehbar und für Optimierungen isolierbar.
+// Kosten: Laufzeit ist kontextabhängig und wird durch Aufruftiefe/Branching bestimmt.
 fn restore_move_buf(ctx: &mut SearchContext, ply: i32, buf: Vec<(Move, Option<char>)>) {
     let idx = if ply < 0 { 0 } else { ply as usize };
     if idx >= ctx.move_buf.len() {
@@ -3219,6 +3510,9 @@ fn restore_move_buf(ctx: &mut SearchContext, ply: i32, buf: Vec<(Move, Option<ch
     ctx.move_buf[idx] = buf;
 }
 
+// Was: Führt die Quiescence-Suche aus (nur taktische Fortsetzungen statt voller Breite).
+// Warum: Verhindert Horizon-Effekte, indem instabile Blattstellungen vor der finalen Bewertung "beruhigt" werden.
+// Kosten: Variabel je nach Taktikdichte; typischerweise deutlich geringer als eine volle Tiefe-Erweiterung.
 fn quiescence(
     pos: &mut Position,
     mut alpha: i32,
@@ -3319,6 +3613,9 @@ fn quiescence(
     alpha
 }
 
+// Was: Kern der Alpha-Beta-Suche im Negamax-Format inklusive TT, Null-Move, LMR und Heuristiken.
+// Warum: Bündelt die leistungsrelevante Hauptsuche in einer rekursiven Routine mit konsistenter Score-Perspektive.
+// Kosten: Exponentiell im Worst Case, in der Praxis stark reduziert durch Pruning und Move-Ordering.
 fn negamax(
     pos: &mut Position,
     depth: u32,
@@ -3528,6 +3825,9 @@ fn negamax(
     best
 }
 
+// Was: Führt die Root-Suche für eine feste Iterationstiefe durch und liefert besten Zug plus Score.
+// Warum: Trennt Root-spezifische Logik (Wiederholungsvermeidung, Reporting, PV-Seed) von der allgemeinen Rekursion.
+// Kosten: Entspricht der vollständigen Suche auf der jeweiligen Iterationstiefe und dominiert die Gesamtzeit.
 fn search_depth(
     pos: &mut Position,
     depth: u32,
@@ -3667,6 +3967,9 @@ fn search_depth(
 
 // Baut die Hash-Historie aus FEN-Text mit kleinem Cache,
 // damit Repetitionsprüfung bei wiederholten Suchen günstiger bleibt.
+// Was: Führt `build_history_cached` aus und kapselt einen klar abgegrenzten Engine-Teilschritt.
+// Warum: Hält die Gesamtlogik modular, nachvollziehbar und für Optimierungen isolierbar.
+// Kosten: Laufzeit ist kontextabhängig und wird durch Aufruftiefe/Branching bestimmt.
 fn build_history_cached(state: &mut TTState, history: &str, zob: &Zobrist, root_hash: u64) -> Vec<u64> {
     let mut cache_updated = false;
     if state.history_cache_raw != history {
@@ -3715,7 +4018,9 @@ fn build_history_cached(state: &mut TTState, history: &str, zob: &Zobrist, root_
     out
 }
 
-// Baut aus TT-Bestzügen eine PV-Zeile für die Ausgabe.
+// Was: Baut aus TT-Bestzügen eine PV-Zeile (Principal Variation) für Anzeige/Debug-Ausgabe.
+// Warum: Macht den aktuellen Suchpfad transparent und hilft bei Konsistenzprüfung zwischen Search und UI/Console.
+// Kosten: Linear in `max_len` mit zusätzlichen TT-Probes und legalitätsgeprüften Probezügen.
 fn build_pv_line(
     pos: &Position,
     tt: &Option<TT>,
@@ -3777,6 +4082,9 @@ fn build_pv_line(
     line.join(" ")
 }
 
+// Was: Führt `search_impl` aus und kapselt einen klar abgegrenzten Engine-Teilschritt.
+// Warum: Hält die Gesamtlogik modular, nachvollziehbar und für Optimierungen isolierbar.
+// Kosten: Laufzeit ist kontextabhängig und wird durch Aufruftiefe/Branching bestimmt.
 fn search_impl(fen: &str, depth: u32, time_ms: u32, tt_mb: u32, history: &str) -> String {
     // Zentraler Such-Entry für beide WASM-Exports.
     // Enthält iterative Deepening + Aspiration Windows + JSON-Ausgabeaufbau.
@@ -3980,12 +4288,18 @@ fn search_impl(fen: &str, depth: u32, time_ms: u32, tt_mb: u32, history: &str) -
 // WASM-Export: einfache Suche (Alpha-Beta, Material-Eval).
 // Rückgabe ist ein JSON-String für den Worker.
 #[wasm_bindgen]
+// Was: Führt `search` aus und kapselt einen klar abgegrenzten Engine-Teilschritt.
+// Warum: Hält die Gesamtlogik modular, nachvollziehbar und für Optimierungen isolierbar.
+// Kosten: Laufzeit ist kontextabhängig und wird durch Aufruftiefe/Branching bestimmt.
 pub fn search(fen: &str, depth: u32, time_ms: u32, tt_mb: u32) -> String {
     search_impl(fen, depth, time_ms, tt_mb, "")
 }
 
 // WASM-Export: Suche mit History für echte Repetition-Erkennung.
 #[wasm_bindgen]
+// Was: Führt `search_with_history` aus und kapselt einen klar abgegrenzten Engine-Teilschritt.
+// Warum: Hält die Gesamtlogik modular, nachvollziehbar und für Optimierungen isolierbar.
+// Kosten: Laufzeit ist kontextabhängig und wird durch Aufruftiefe/Branching bestimmt.
 pub fn search_with_history(fen: &str, depth: u32, time_ms: u32, tt_mb: u32, history: &str) -> String {
     search_impl(fen, depth, time_ms, tt_mb, history)
 }
@@ -3995,6 +4309,9 @@ pub fn search_with_history(fen: &str, depth: u32, time_ms: u32, tt_mb: u32, hist
 // ---------------------------
 // Parst den Rochade-String der FEN in eine Bitmaske.
 // Unterstützt KQkq oder "-" für keine Rechte.
+// Was: Führt `parse_castling` aus und kapselt einen klar abgegrenzten Engine-Teilschritt.
+// Warum: Hält die Gesamtlogik modular, nachvollziehbar und für Optimierungen isolierbar.
+// Kosten: Laufzeit ist kontextabhängig und wird durch Aufruftiefe/Branching bestimmt.
 fn parse_castling(s: &str) -> u8 {
     if s == "-" {
         return 0;
@@ -4014,6 +4331,9 @@ fn parse_castling(s: &str) -> u8 {
 
 // Wandelt die Rochade-Bitmaske zurück in die FEN-Repräsentation.
 // Gibt "-" aus, wenn keine Rechte vorhanden sind.
+// Was: Führt `castling_to_string` aus und kapselt einen klar abgegrenzten Engine-Teilschritt.
+// Warum: Hält die Gesamtlogik modular, nachvollziehbar und für Optimierungen isolierbar.
+// Kosten: Laufzeit ist kontextabhängig und wird durch Aufruftiefe/Branching bestimmt.
 fn castling_to_string(mask: u8) -> String {
     if mask == 0 {
         return "-".to_string();
@@ -4028,6 +4348,9 @@ fn castling_to_string(mask: u8) -> String {
 
 // Wandelt algebraische Notation (z.B. "e4") in Feldindex 0..63.
 // Erwartet exakt zwei Zeichen und gültige Range.
+// Was: Führt `lan_to_field` aus und kapselt einen klar abgegrenzten Engine-Teilschritt.
+// Warum: Hält die Gesamtlogik modular, nachvollziehbar und für Optimierungen isolierbar.
+// Kosten: Laufzeit ist kontextabhängig und wird durch Aufruftiefe/Branching bestimmt.
 fn lan_to_field(s: &str) -> Option<u8> {
     let bytes = s.as_bytes();
     if bytes.len() != 2 {
@@ -4048,6 +4371,9 @@ fn lan_to_field(s: &str) -> Option<u8> {
 
 // Wandelt Feldindex 0..63 in algebraische Notation (z.B. "e4").
 // Nutzt a1=0, h8=63 Konvention.
+// Was: Führt `field_to_lan` aus und kapselt einen klar abgegrenzten Engine-Teilschritt.
+// Warum: Hält die Gesamtlogik modular, nachvollziehbar und für Optimierungen isolierbar.
+// Kosten: Laufzeit ist kontextabhängig und wird durch Aufruftiefe/Branching bestimmt.
 fn field_to_lan(sq: u8) -> String {
     let file = (sq % 8) as u8;
     let rank = (sq / 8) as u8 + 1;
@@ -4057,6 +4383,9 @@ fn field_to_lan(sq: u8) -> String {
 
 // Parst das En-passant-Feld der FEN.
 // "-" bedeutet: kein EP-Ziel vorhanden.
+// Was: Führt `parse_ep` aus und kapselt einen klar abgegrenzten Engine-Teilschritt.
+// Warum: Hält die Gesamtlogik modular, nachvollziehbar und für Optimierungen isolierbar.
+// Kosten: Laufzeit ist kontextabhängig und wird durch Aufruftiefe/Branching bestimmt.
 fn parse_ep(s: &str) -> Option<u8> {
     if s == "-" {
         return None;
@@ -4067,6 +4396,9 @@ fn parse_ep(s: &str) -> Option<u8> {
 // Parst nur den Brett-Teil der FEN in ein Array.
 // a1 entspricht Index 0, h8 entspricht Index 63.
 // Gibt None zurück bei ungültiger Struktur.
+// Was: Führt `fen_board_to_array` aus und kapselt einen klar abgegrenzten Engine-Teilschritt.
+// Warum: Hält die Gesamtlogik modular, nachvollziehbar und für Optimierungen isolierbar.
+// Kosten: Laufzeit ist kontextabhängig und wird durch Aufruftiefe/Branching bestimmt.
 fn fen_board_to_array(board_part: &str) -> Option<[Option<char>; 64]> {
     let ranks: Vec<&str> = board_part.split('/').collect();
     if ranks.len() != 8 {
@@ -4102,6 +4434,9 @@ fn fen_board_to_array(board_part: &str) -> Option<[Option<char>; 64]> {
 
 // Serialisiert das Board-Array zurück in den Brett-Teil der FEN.
 // Komprimiert leere Felder als Zahlen.
+// Was: Führt `board_to_fen` aus und kapselt einen klar abgegrenzten Engine-Teilschritt.
+// Warum: Hält die Gesamtlogik modular, nachvollziehbar und für Optimierungen isolierbar.
+// Kosten: Laufzeit ist kontextabhängig und wird durch Aufruftiefe/Branching bestimmt.
 fn board_to_fen(board: &[Option<char>; 64]) -> String {
     let mut ranks = Vec::with_capacity(8);
 
