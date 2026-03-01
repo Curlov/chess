@@ -491,6 +491,13 @@ if (mediaUrls != null) {
 
 // stoppt scrollen auf dem handy!
 document.addEventListener('touchmove', (e) => {
+    const target = e.target;
+    if (target instanceof Element) {
+        // UI-Controls im Overlay (z.B. Range-Slider) dürfen Touch-Move normal verarbeiten.
+        if (target.closest('.start-overlay, .promotion-overlay')) {
+            return;
+        }
+    }
     e.preventDefault();
 }, { passive: false });
 
