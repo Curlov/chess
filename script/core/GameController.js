@@ -23,6 +23,7 @@ export default class GameController {
             autoOpponent = true,
             bookPauseMs = 3000,
             onEngineThinkStart = null,
+            onEngineThinkProgress = null,
             onEngineThinkEnd = null,
             onGameEnd = null
         } = options || {};
@@ -33,6 +34,7 @@ export default class GameController {
         this.autoOpponent = autoOpponent === true;
         this.bookPauseMs = bookPauseMs;
         this.onEngineThinkStart = typeof onEngineThinkStart === "function" ? onEngineThinkStart : null;
+        this.onEngineThinkProgress = typeof onEngineThinkProgress === "function" ? onEngineThinkProgress : null;
         this.onEngineThinkEnd = typeof onEngineThinkEnd === "function" ? onEngineThinkEnd : null;
         this.onGameEnd = typeof onGameEnd === "function" ? onGameEnd : null;
 
@@ -209,7 +211,7 @@ export default class GameController {
     }
 
     async search(options = {}) {
-        const { depth = 4, timeMs = 0, ttMb = 128, fen = null, debugRootEval = false } = options || {};
+        const { depth = 4, timeMs = 0, ttMb = 128, fen = null, debugRootEval = false, onProgress = null } = options || {};
         const targetFen = fen ?? this.currentFen ?? this.baseFen;
         if (!targetFen) {
             console.warn("search: keine FEN vorhanden");
@@ -275,7 +277,13 @@ export default class GameController {
                 safeTimeMs,
                 safeTtMb,
                 history,
-                { gameId: this.gameId, bookEnabled, uciHistory, debugRootEval: debugRootEval === true }
+                {
+                    gameId: this.gameId,
+                    bookEnabled,
+                    uciHistory,
+                    debugRootEval: debugRootEval === true,
+                    onProgress
+                }
             );
         } catch (err) {
             console.error("Fehler in search:", err);
@@ -289,16 +297,34 @@ export default class GameController {
 
         const thinkStart = performance.now();
         if (this.onEngineThinkStart) {
-            this.onEngineThinkStart({ durationMs: this.engineTimeMs });
+            this.onEngineThinkStart({
+                durationMs: this.engineTimeMs,
+                displayTimeMs: this.engineTimeMs,
+                ttMb: this.engineTtMb
+            });
         }
 
         let result = null;
         let searchFailed = false;
+        const handleProgress = (progress) => {
+            if (!this.onEngineThinkProgress) return;
+            const depth = Number(progress?.depth);
+            const nodes = Number(progress?.nodes);
+            const elapsedMs = Number(progress?.time_ms);
+            this.onEngineThinkProgress({
+                durationMs: this.engineTimeMs,
+                ttMb: this.engineTtMb,
+                depth: Number.isFinite(depth) ? depth : 0,
+                nodes: Number.isFinite(nodes) ? nodes : 0,
+                elapsedMs: Number.isFinite(elapsedMs) ? elapsedMs : null
+            });
+        };
         try {
             result = await this.search({
                 fen: fenBefore,
                 timeMs: this.engineTimeMs,
-                ttMb: this.engineTtMb
+                ttMb: this.engineTtMb,
+                onProgress: handleProgress
             });
         } catch (err) {
             console.error("autoOpponent: search failed:", err);
@@ -312,7 +338,9 @@ export default class GameController {
                 this.onEngineThinkEnd({
                     durationMs: this.engineTimeMs,
                     elapsedMs,
-                    remainingMs
+                    remainingMs,
+                    ttMb: this.engineTtMb,
+                    result
                 });
             }
             return;
@@ -332,7 +360,9 @@ export default class GameController {
             this.onEngineThinkEnd({
                 durationMs: this.engineTimeMs,
                 elapsedMs,
-                remainingMs
+                remainingMs,
+                ttMb: this.engineTtMb,
+                result
             });
         }
 
@@ -351,11 +381,21 @@ export default class GameController {
 
         if (this._isBookResult(result) && Number.isFinite(this.bookPauseMs) && this.bookPauseMs > 0) {
             if (this.onEngineThinkStart) {
-                this.onEngineThinkStart({ durationMs: this.bookPauseMs });
+                this.onEngineThinkStart({
+                    durationMs: this.bookPauseMs,
+                    displayTimeMs: this.engineTimeMs,
+                    ttMb: this.engineTtMb
+                });
             }
             await this._sleep(this.bookPauseMs);
             if (this.onEngineThinkEnd) {
-                this.onEngineThinkEnd({ durationMs: this.bookPauseMs, elapsedMs: this.bookPauseMs, remainingMs: 0 });
+                this.onEngineThinkEnd({
+                    durationMs: this.bookPauseMs,
+                    elapsedMs: this.bookPauseMs,
+                    remainingMs: 0,
+                    ttMb: this.engineTtMb,
+                    result
+                });
             }
         }
 
@@ -392,10 +432,17 @@ export default class GameController {
             return;
         }
         const r = result.result && typeof result.result === "object" ? result.result : result;
+        const nodesValue = r.nodes_total ?? r.nodesTotal ?? r.nodes ?? null;
+        const nodesCompleted = r.nodes_completed ?? r.nodesCompleted ?? r.nodes ?? null;
+        const depthRaw = Number(r.depth);
+        const hasDeeperWork = Number(nodesValue) > Number(nodesCompleted);
+        const depthDisplay = Number.isFinite(depthRaw)
+            ? depthRaw + (hasDeeperWork ? 1 : 0)
+            : (r.depth ?? null);
         const summary = {
-            depth: r.depth ?? null,
+            depth: depthDisplay,
             score: r.score ?? null,
-            nodes: r.nodes ?? null,
+            nodes: nodesValue,
             nps: r.nps ?? null,
             best: r.best ?? null,
             pv: r.pv ?? null,
@@ -615,6 +662,17 @@ export default class GameController {
 
     async _maybeReportGameEnd(fen, context = "game_end_probe") {
         const sideToMove = this._getSideToMove(fen);
+        if (this._isKingsOnlyPosition(fen)) {
+            this._reportOutcome({
+                reason: "insufficient_material",
+                winner: null,
+                sideToMove,
+                score: 0,
+                message: "Draw (insufficient material: kings only)."
+            }, null, context);
+            return true;
+        }
+
         const halfmoveClock = this._getHalfmoveClock(fen);
         if (Number.isFinite(halfmoveClock) && halfmoveClock >= 100) {
             this._reportOutcome({
@@ -650,6 +708,30 @@ export default class GameController {
             return true;
         }
         return false;
+    }
+
+    _isKingsOnlyPosition(fen) {
+        if (!fen || typeof fen !== "string") return false;
+        const boardPart = fen.trim().split(/\s+/)[0] || "";
+        if (!boardPart) return false;
+
+        let whiteKing = 0;
+        let blackKing = 0;
+        for (const ch of boardPart) {
+            if (ch === "/" || (ch >= "1" && ch <= "8")) {
+                continue;
+            }
+            if (ch === "K") {
+                whiteKing += 1;
+                continue;
+            }
+            if (ch === "k") {
+                blackKing += 1;
+                continue;
+            }
+            return false;
+        }
+        return whiteKing === 1 && blackKing === 1;
     }
 
     async _hasAnyLegalMove(fen) {

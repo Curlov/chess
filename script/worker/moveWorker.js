@@ -32,6 +32,27 @@ const bookState = {
     lastHistory: ""
 };
 
+let searchSeq = 0;
+let activeSearchId = 0;
+
+function toSafeInt(value) {
+    const n = Number(value);
+    return Number.isFinite(n) && n >= 0 ? Math.floor(n) : 0;
+}
+
+globalThis.__engine_progress = (depth, nodesCompleted, nodesTotal, elapsedMs) => {
+    if (!activeSearchId) return;
+    self.postMessage({
+        action: "search-progress",
+        searchId: activeSearchId,
+        depth: toSafeInt(depth),
+        nodes: toSafeInt(nodesTotal),
+        nodes_completed: toSafeInt(nodesCompleted),
+        nodes_total: toSafeInt(nodesTotal),
+        time_ms: toSafeInt(elapsedMs)
+    });
+};
+
 function normalizeHistory(history) {
     return String(history || "").trim().replace(/\s+/g, " ");
 }
@@ -273,6 +294,8 @@ self.onmessage = async function (e) {
             return;
         }
 
+        const searchId = ++searchSeq;
+
         try {
             if (typeof set_root_eval_debug === "function") {
                 set_root_eval_debug(debugRootEval);
@@ -285,6 +308,7 @@ self.onmessage = async function (e) {
         if (bookMove) {
             self.postMessage({
                 action: "search",
+                searchId,
                 depth: 0,
                 nodes: 0,
                 time_ms: 0,
@@ -302,21 +326,26 @@ self.onmessage = async function (e) {
         const safeTtMb = Number.isFinite(ttMb) && ttMb > 0 ? ttMb : 0;
 
         const history = typeof data.history === "string" ? data.history : "";
-        const raw = history && history.trim().length > 0
-            ? search_with_history(fen, safeDepth, safeTimeMs, safeTtMb, history)
-            : search(fen, safeDepth, safeTimeMs, safeTtMb);
         let result = null;
+        activeSearchId = searchId;
         try {
-            result = JSON.parse(raw);
-        } catch (err) {
-            console.error("moveWorker: search JSON parse failed:", err, raw);
-            result = { error: "invalid result", raw };
+            const raw = history && history.trim().length > 0
+                ? search_with_history(fen, safeDepth, safeTimeMs, safeTtMb, history)
+                : search(fen, safeDepth, safeTimeMs, safeTtMb);
+            try {
+                result = JSON.parse(raw);
+            } catch (err) {
+                console.error("moveWorker: search JSON parse failed:", err, raw);
+                result = { error: "invalid result", raw };
+            }
+        } finally {
+            activeSearchId = 0;
         }
 
         if (result && typeof result === "object") {
-            self.postMessage({ action: "search", ...result });
+            self.postMessage({ action: "search", searchId, ...result });
         } else {
-            self.postMessage({ action: "search", result });
+            self.postMessage({ action: "search", searchId, result });
         }
         return;
     }

@@ -6,6 +6,9 @@ use std::cell::{Cell, RefCell};
 extern "C" {
     #[wasm_bindgen(js_namespace = Date, js_name = now)]
     fn date_now() -> f64;
+
+    #[wasm_bindgen(js_namespace = globalThis, js_name = __engine_progress)]
+    fn engine_progress(depth: u32, nodes_completed: f64, nodes_total: f64, elapsed_ms: u32);
 }
 
 thread_local! {
@@ -13,6 +16,7 @@ thread_local! {
 }
 
 const TIME_CHECK_NODE_INTERVAL: u64 = 256;
+const PROGRESS_EMIT_INTERVAL_MS: f64 = 250.0;
 
 #[inline]
 // Erzeugt ein Bitboard mit genau einem gesetzten Bit.
@@ -3009,10 +3013,15 @@ where
 
 struct SearchContext {
     nodes: u64,
+    completed_nodes: u64,
     start_ms: f64,
     time_limit_ms: f64,
     time_check_interval_ms: f64,
     last_time_check_ms: f64,
+    last_progress_emit_ms: f64,
+    progress_emit_interval_ms: f64,
+    current_depth: u32,
+    completed_depth: u32,
     stop: bool,
     tt_gen: u8,
     history: Vec<u64>,
@@ -3061,6 +3070,28 @@ fn history_pop(ctx: &mut SearchContext) {
 }
 
 #[inline]
+fn emit_progress_at(ctx: &mut SearchContext, now: f64, force: bool) {
+    if !force && (now - ctx.last_progress_emit_ms) < ctx.progress_emit_interval_ms {
+        return;
+    }
+    ctx.last_progress_emit_ms = now;
+    let elapsed_ms = (now - ctx.start_ms).max(0.0) as u32;
+    let depth_for_display = ctx.current_depth.max(ctx.completed_depth);
+    engine_progress(
+        depth_for_display,
+        ctx.completed_nodes as f64,
+        ctx.nodes as f64,
+        elapsed_ms
+    );
+}
+
+#[inline]
+fn emit_progress(ctx: &mut SearchContext, force: bool) {
+    let now = now_ms();
+    emit_progress_at(ctx, now, force);
+}
+
+#[inline]
 fn should_stop(ctx: &mut SearchContext) -> bool {
     if ctx.stop {
         return true;
@@ -3076,6 +3107,7 @@ fn should_stop(ctx: &mut SearchContext) -> bool {
         return false;
     }
     ctx.last_time_check_ms = now;
+    emit_progress_at(ctx, now, false);
     if now - ctx.start_ms >= ctx.time_limit_ms {
         ctx.stop = true;
         return true;
@@ -3670,10 +3702,15 @@ fn search_impl(fen: &str, depth: u32, time_ms: u32, tt_mb: u32, history: &str) -
             let move_buf = Vec::with_capacity(max_ply);
             let mut ctx = SearchContext {
                 nodes: 0,
+                completed_nodes: 0,
                 start_ms,
                 time_limit_ms,
                 time_check_interval_ms,
                 last_time_check_ms: start_ms,
+                last_progress_emit_ms: start_ms - PROGRESS_EMIT_INTERVAL_MS,
+                progress_emit_interval_ms: PROGRESS_EMIT_INTERVAL_MS,
+                current_depth: 0,
+                completed_depth: 0,
                 stop: false,
                 tt_gen,
                 history,
@@ -3695,6 +3732,7 @@ fn search_impl(fen: &str, depth: u32, time_ms: u32, tt_mb: u32, history: &str) -
             const ASP_MAX_ITERS: u32 = 6;
 
             for d in 1..=max_depth {
+                ctx.current_depth = d;
                 let mut score = 0;
                 let mut mv: Option<(Move, Option<char>)> = None;
                 let mut rep_avoid = false;
@@ -3755,9 +3793,12 @@ fn search_impl(fen: &str, depth: u32, time_ms: u32, tt_mb: u32, history: &str) -
                 best_score = score;
                 best_move = mv;
                 completed_depth = d;
+                ctx.completed_depth = d;
+                ctx.completed_nodes = ctx.nodes;
                 rep_avoid_used = rep_avoid;
                 last_score = best_score;
                 pv_move_hint = best_move.map(|(mv, promo)| (mv.from, mv.to, promo));
+                emit_progress(&mut ctx, true);
 
                 if best_score >= MATE_SCORE - MATE_EARLY_STOP_PLIES {
                     break;
@@ -3767,6 +3808,7 @@ fn search_impl(fen: &str, depth: u32, time_ms: u32, tt_mb: u32, history: &str) -
                     break;
                 }
             }
+            emit_progress(&mut ctx, true);
 
             let elapsed_ms = (now_ms() - ctx.start_ms).max(0.0);
             let nps = if elapsed_ms > 0.0 {
@@ -3792,9 +3834,10 @@ fn search_impl(fen: &str, depth: u32, time_ms: u32, tt_mb: u32, history: &str) -
             };
 
             let mut out = format!(
-                "{{\"depth\":{},\"nodes\":{},\"time_ms\":{},\"nps\":{},\"score\":{},\"best\":\"{}\",\"pv\":\"{}\",\"rep_avoid\":{}}}",
+                "{{\"depth\":{},\"nodes\":{},\"nodes_completed\":{},\"time_ms\":{},\"nps\":{},\"score\":{},\"best\":\"{}\",\"pv\":\"{}\",\"rep_avoid\":{}}}",
                 completed_depth,
                 ctx.nodes,
+                ctx.completed_nodes,
                 elapsed_ms as u64,
                 nps,
                 best_score,

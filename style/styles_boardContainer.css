@@ -195,6 +195,26 @@ html  {
     opacity: 0.35;
 }
 
+.engine-status {
+    width: var(--timebarWidth, var(--allFields));
+    margin-top: 8px;
+    color: rgba(255, 255, 255, 0.35);
+    opacity: 0.75;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    font-family: "Cascadia Mono", "Consolas", "Menlo", "Monaco", monospace;
+    font-variant-numeric: tabular-nums;
+    font-size: 14px;
+    line-height: 1.2;
+    letter-spacing: 0.01em;
+}
+
+.engine-status > span {
+    white-space: nowrap;
+}
+
 .square {
     position: relative;
 }

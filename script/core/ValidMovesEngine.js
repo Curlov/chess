@@ -11,16 +11,26 @@ export default class ValidMovesEngine {
 
         this.worker.onmessage = (e) => {
             //console.log("ValidMovesEngine: Worker onmessage (raw):", e.data);
+            const payload = e.data || {};
+
+            if (payload.action === "search-progress") {
+                if (
+                    this.pending &&
+                    this.pending.type === "search" &&
+                    typeof this.pending.onProgress === "function"
+                ) {
+                    this.pending.onProgress(payload);
+                }
+                return;
+            }
 
             if (!this.pending) {
-                console.warn("ValidMovesEngine: Message ohne pending:", e.data);
+                console.warn("ValidMovesEngine: Message ohne pending:", payload);
                 return;
             }
 
             const { resolve, type } = this.pending;
             this.pending = null;
-
-            const payload = e.data || {};
 
             if (type === "moves") {
                 resolve(payload.moves || []);
@@ -62,9 +72,15 @@ export default class ValidMovesEngine {
         };
     }
 
-    _enqueue(type, message) {
+    _enqueue(type, message, options = {}) {
         return new Promise((resolve, reject) => {
-            const task = { type, message, resolve, reject };
+            const task = {
+                type,
+                message,
+                resolve,
+                reject,
+                onProgress: typeof options.onProgress === "function" ? options.onProgress : null
+            };
             if (this.pending) {
                 this.queue.push(task);
                 return;
@@ -74,7 +90,12 @@ export default class ValidMovesEngine {
     }
 
     _dispatch(task) {
-        this.pending = { resolve: task.resolve, reject: task.reject, type: task.type };
+        this.pending = {
+            resolve: task.resolve,
+            reject: task.reject,
+            type: task.type,
+            onProgress: task.onProgress
+        };
         try {
             this.worker.postMessage(task.message);
         } catch (err) {
@@ -144,6 +165,7 @@ export default class ValidMovesEngine {
         const bookEnabled = meta.bookEnabled === true;
         const uciHistory = typeof meta.uciHistory === "string" ? meta.uciHistory : "";
         const debugRootEval = meta.debugRootEval === true;
+        const onProgress = typeof meta.onProgress === "function" ? meta.onProgress : null;
 
         return this._enqueue("search", {
             action: "search",
@@ -156,7 +178,7 @@ export default class ValidMovesEngine {
             bookEnabled,
             uciHistory,
             debugRootEval
-        });
+        }, { onProgress });
     }
 
     terminate() {
