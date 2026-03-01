@@ -1,3 +1,7 @@
+/**
+ * Sammlung kleiner Hilfsfunktionen rund um Feldnotation,
+ * FEN-Aufbereitung und einfache Perft-Integration.
+ */
 const FILES = ['a','b','c','d','e','f','g','h'];
 const START_FEN = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
 
@@ -81,4 +85,3 @@ export async function runPerft(controller, depth = 3, fen = null) {
     }
     return result;
 }
-

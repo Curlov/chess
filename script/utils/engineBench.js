@@ -1,11 +1,18 @@
+/**
+ * Benchmark-Helfer für reproduzierbare Engine-Messungen im Browser.
+ * Die Funktionen werden auf `window` registriert, um direkt über die Konsole
+ * unterschiedliche TT-/Zeit-/Depth-Profile testen zu können.
+ */
 const DEFAULT_BENCH_FEN = "r3k2r/p1ppqpb1/bn2pnp1/2pP4/1p2P3/2N2N2/PPQ1BPPP/R1B2RK1 w kq - 0 1";
 const DEFAULT_TT_LIST = [0, 32, 64, 128, 256];
 
+/** Normalisiert numerische Eingaben auf finite Number oder null. */
 function toFiniteNumber(value) {
     const n = Number(value);
     return Number.isFinite(n) ? n : null;
 }
 
+/** Linear interpoliertes Quantil auf bereits sortiertem Array. */
 function percentile(sortedAsc, p) {
     if (!Array.isArray(sortedAsc) || sortedAsc.length === 0) return null;
     if (sortedAsc.length === 1) return sortedAsc[0];
@@ -19,6 +26,7 @@ function percentile(sortedAsc, p) {
     return sortedAsc[lo] + (sortedAsc[hi] - sortedAsc[lo]) * t;
 }
 
+/** Arithmetisches Mittel über ein Zahlen-Array. */
 function average(values) {
     if (!Array.isArray(values) || values.length === 0) return null;
     let sum = 0;
@@ -26,12 +34,14 @@ function average(values) {
     return sum / values.length;
 }
 
+/** Baut künstliche History-Zeilen für history-basierte Engine-Tests. */
 function buildHistory(fen, lines) {
     const count = Math.max(0, Number(lines) || 0);
     if (count <= 0) return "";
     return Array.from({ length: count }, () => fen).join("\n");
 }
 
+/** Führt genau einen Benchmark-Run aus und extrahiert zentrale Kennzahlen. */
 async function measureRun(runFn) {
     const t0 = performance.now();
     const raw = await runFn();
@@ -54,6 +64,7 @@ async function measureRun(runFn) {
     };
 }
 
+/** Verdichtet mehrere Einzelläufe einer TT-Stufe zu einer Statistik-Zeile. */
 function summarizeCase(ttMb, rows) {
     const wall = rows.map((r) => r.wallMs).filter((v) => Number.isFinite(v));
     const engine = rows.map((r) => r.engineMs).filter((v) => Number.isFinite(v));
@@ -89,6 +100,7 @@ function summarizeCase(ttMb, rows) {
     };
 }
 
+/** Formatiert die Kennzahlen für `console.table`. */
 function toTableRow(row) {
     return {
         ttMb: row.ttMb,
@@ -105,6 +117,13 @@ function toTableRow(row) {
     };
 }
 
+/**
+ * Registriert globale Benchmark-Funktionen:
+ * - `engineBench`
+ * - `engineBenchQuick`
+ * - `engineBenchTT`
+ * - `engineBenchTime`
+ */
 export function registerEngineBench(controller) {
     if (!controller) {
         console.warn("[engineBench] controller missing");

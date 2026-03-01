@@ -1,3 +1,19 @@
+@font-face {
+    font-family: "Agatha";
+    src: url("../src/fonts/Agatha.otf") format("opentype");
+    font-style: normal;
+    font-weight: 400;
+    font-display: swap;
+}
+
+@font-face {
+    font-family: "Softball";
+    src: url("../src/fonts/Softball.otf") format("opentype");
+    font-style: normal;
+    font-weight: 400;
+    font-display: swap;
+}
+
 :root {
     --field: 50px;
     --allFields: 400px;
@@ -5,6 +21,7 @@
     --chessBoard: 450px;
     --pieces: 45px;
     --piece-rotation: 0deg;
+    --engine-accent: rgba(255, 255, 255, 0.35);
 }
 
 .square-light {
@@ -33,6 +50,16 @@ html  {
     height: 100vh;
     margin: 0;
     overflow: hidden; 
+}
+
+.board-title {
+    color: var(--engine-accent);
+    font-family: "Softball", "Agatha", "Georgia", serif;
+    font-size: 61px;
+    line-height: 1;
+    letter-spacing: 0.01em;
+    margin-bottom: 25px;
+    text-align: center;
 }
 
 .boardContainer {
@@ -186,7 +213,7 @@ html  {
 .timebar-fill {
     height: 100%;
     width: 100%;
-    background: rgba(255, 255, 255, 0.35);
+    background: var(--engine-accent);
     transform-origin: left center;
     transition: width 80ms linear;
 }
@@ -198,7 +225,7 @@ html  {
 .engine-status {
     width: var(--timebarWidth, var(--allFields));
     margin-top: 8px;
-    color: rgba(255, 255, 255, 0.35);
+    color: var(--engine-accent);
     opacity: 0.75;
     display: flex;
     align-items: center;
@@ -213,6 +240,134 @@ html  {
 
 .engine-status > span {
     white-space: nowrap;
+}
+
+.game-state {
+    width: var(--timebarWidth, var(--allFields));
+    min-height: 24px;
+    margin-top: 30px;
+    color: var(--engine-accent);
+    font-size: 24px;
+    line-height: 1.2;
+    text-align: center;
+    font-weight: 600;
+    letter-spacing: 0.01em;
+}
+
+.start-overlay {
+    position: absolute;
+    inset: 0;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    background: rgba(0, 0, 0, 0.35);
+    z-index: 80;
+}
+
+.start-overlay.show {
+    display: flex;
+}
+
+.start-dialog {
+    width: min(420px, calc(100vw - 10px));
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    padding: 18px;
+    background: rgba(22, 22, 22, 0.95);
+    border: 1px solid rgba(255, 255, 255, 0.15);
+    border-radius: 10px;
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.6);
+}
+
+.start-title {
+    color: rgba(255, 255, 255, 0.9);
+    text-align: center;
+    font-size: 20px;
+    letter-spacing: 0.04em;
+    font-weight: 600;
+}
+
+.start-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.start-row-range {
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+}
+
+.start-label {
+    color: rgba(255, 255, 255, 0.75);
+    font-size: 14px;
+    width: 100%;
+    text-align: center;
+}
+
+.start-range {
+    width: 100%;
+    accent-color: rgba(255, 255, 255, 0.45);
+}
+
+.start-time-text {
+    color: rgba(255, 255, 255, 0.65);
+    font-family: "Cascadia Mono", "Consolas", "Menlo", "Monaco", monospace;
+    font-size: 15px;
+    width: 100%;
+    text-align: center;
+}
+
+.start-toggle,
+.start-button {
+    flex: 1;
+    height: 44px;
+    border-radius: 8px;
+    border: 1px solid rgba(255, 255, 255, 0.18);
+    background: #2a2a2a;
+    color: rgba(255, 255, 255, 0.8);
+    cursor: pointer;
+    font-size: 16px;
+}
+
+.start-toggle.active {
+    background: #3a3a3a;
+    color: rgba(255, 255, 255, 0.98);
+    border-color: rgba(255, 255, 255, 0.42);
+}
+
+.start-button {
+    background: #363636;
+}
+
+@media (max-width: 700px) {
+    .board-title {
+        font-size: 55px;
+        margin-bottom: 25px;
+    }
+
+    .start-dialog {
+        width: min(520px, calc(100vw - 8px));
+        padding: 20px;
+        gap: 16px;
+    }
+
+    .start-title {
+        font-size: 24px;
+    }
+
+    .start-label,
+    .start-time-text {
+        font-size: 16px;
+    }
+
+    .start-toggle,
+    .start-button {
+        height: 50px;
+        font-size: 17px;
+    }
 }
 
 .square {

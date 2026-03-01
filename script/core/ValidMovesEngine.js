@@ -1,5 +1,9 @@
 // script/ValidMovesEngine.js
 
+/**
+ * Asynchrone Brücke zwischen UI-Thread und Move-Worker.
+ * Verwaltet genau einen aktiven Worker-Request plus Queue.
+ */
 export default class ValidMovesEngine {
     constructor() {
         const workerUrl = new URL("../worker/moveWorker.js", import.meta.url);
@@ -9,10 +13,13 @@ export default class ValidMovesEngine {
         this.pending = null;
         this.queue = [];
 
+        // Zentraler Eingang für alle Worker-Antworten.
         this.worker.onmessage = (e) => {
             //console.log("ValidMovesEngine: Worker onmessage (raw):", e.data);
             const payload = e.data || {};
 
+            // Progress-Events gehören zum aktuell laufenden Search-Task
+            // und lösen den Promise selbst noch nicht auf.
             if (payload.action === "search-progress") {
                 if (
                     this.pending &&
@@ -24,6 +31,7 @@ export default class ValidMovesEngine {
                 return;
             }
 
+            // Defensive Prüfung: Antwort ohne passenden aktiven Task.
             if (!this.pending) {
                 console.warn("ValidMovesEngine: Message ohne pending:", payload);
                 return;
@@ -32,6 +40,7 @@ export default class ValidMovesEngine {
             const { resolve, type } = this.pending;
             this.pending = null;
 
+            // Antwort je nach Task-Typ auflösen.
             if (type === "moves") {
                 resolve(payload.moves || []);
             } else if (type === "apply") {
@@ -48,6 +57,7 @@ export default class ValidMovesEngine {
             this._drainQueue();
         };
 
+        // Bei Worker-Fehler: aktiven Task + Queue sauber mit reject beenden.
         this.worker.onerror = (err) => {
             console.error(
                 "ValidMovesEngine: Worker onerror",
@@ -72,6 +82,7 @@ export default class ValidMovesEngine {
         };
     }
 
+    /** Legt einen Task an und stellt Reihenfolge über die interne Queue sicher. */
     _enqueue(type, message, options = {}) {
         return new Promise((resolve, reject) => {
             const task = {
@@ -89,6 +100,7 @@ export default class ValidMovesEngine {
         });
     }
 
+    /** Dispatcht den Task direkt an den Worker und setzt ihn auf "pending". */
     _dispatch(task) {
         this.pending = {
             resolve: task.resolve,
@@ -105,6 +117,7 @@ export default class ValidMovesEngine {
         }
     }
 
+    /** Startet den nächsten Queue-Task, sobald kein Task mehr aktiv ist. */
     _drainQueue() {
         if (this.pending || this.queue.length === 0) {
             return;
@@ -115,6 +128,7 @@ export default class ValidMovesEngine {
         }
     }
 
+    /** API: legale Zielfelder für eine Startposition abrufen. */
     getValidMoves(fen, field) {
         if (!this.worker) {
             return Promise.reject(new Error("Worker nicht initialisiert"));
@@ -127,6 +141,7 @@ export default class ValidMovesEngine {
         });
     }
 
+    /** API: einen Zug anwenden und die neue FEN zurückgeben. */
     applyMove(fen, from, to, promotion = "") {
         //console.log("ValidMovesEngine.applyMove:", { fen, from, to });
 
@@ -143,6 +158,7 @@ export default class ValidMovesEngine {
         });
     }
 
+    /** API: Perft-Berechnung (Knotenanzahl) für eine Position. */
     perft(fen, depth = 1) {
         if (!this.worker) {
             return Promise.reject(new Error("Worker nicht initialisiert"));
@@ -155,6 +171,7 @@ export default class ValidMovesEngine {
         });
     }
 
+    /** API: Engine-Suche mit optionalem Progress-Callback. */
     search(fen, depth = 4, timeMs = 0, ttMb = 0, history = "", bookMeta = null) {
         if (!this.worker) {
             return Promise.reject(new Error("Worker nicht initialisiert"));
@@ -181,6 +198,7 @@ export default class ValidMovesEngine {
         }, { onProgress });
     }
 
+    /** Worker explizit beenden, z. B. bei Cleanup/Hot-Reload. */
     terminate() {
         if (this.worker) {
             this.worker.terminate();

@@ -6,6 +6,14 @@ import MoveList from './core/MoveList.js';
 import { lanToField, fieldToLan, fenZuFigurenListe, getStartFen, getPuzzleFen, runPerft } from './utils/utilitys.js';
 import { registerEngineBench } from './utils/engineBench.js';
 
+/**
+ * Haupt-Einstieg (Variante 1) für UI + Board + GameController.
+ * Verantwortlich für:
+ * - Gerätekonfiguration und Asset-Preload
+ * - Startmenü (Farbe, Zeit, Legal-Moves)
+ * - Engine-Liveanzeige (Time/TT/Depth/Nodes)
+ * - globale Debug-Hooks (`window.search`, `window.perft`, ...)
+ */
 
 // Hier wird geprüft, ob es sich um ein mobiles Device handelt oder um einen Desktop
 const device = DeviceCheck.isMobile() ? "mobile" : "desktop";
@@ -41,6 +49,7 @@ if (useBackgroundImg === true) {
 // Hier geht es nur weiter, wenn mediaUrls entsprechende Links enthält - sonst sauberer Abbruch
 if (mediaUrls != null) {
     window.addEventListener("load", () => {
+        // UI-Referenzen für Engine-Status + Startdialog einmalig auflösen.
         const timebar = document.querySelector(".timebar");
         const timebarFill = timebar?.querySelector(".timebar-fill");
         const engineStatus = document.querySelector(".engine-status");
@@ -48,7 +57,42 @@ if (mediaUrls != null) {
         const engineStatusTt = engineStatus?.querySelector(".engine-status-tt");
         const engineStatusDepth = engineStatus?.querySelector(".engine-status-depth");
         const engineStatusNodes = engineStatus?.querySelector(".engine-status-nodes");
+        const gameState = document.querySelector(".game-state");
+        const startOverlay = document.querySelector(".start-overlay");
+        const colorWhiteButton = startOverlay?.querySelector("[data-color='w']");
+        const colorBlackButton = startOverlay?.querySelector("[data-color='b']");
+        const timeRange = startOverlay?.querySelector(".start-range");
+        const timeText = startOverlay?.querySelector(".start-time-text");
+        const legalMovesButton = startOverlay?.querySelector("[data-legal-moves]");
+        const startButton = startOverlay?.querySelector(".start-button");
 
+        // Time->TT-Mapping: konservativ abgestuft nach konfigurierter Bedenkzeit.
+        const ttFromTimeMs = (timeMs) => {
+            const value = Number(timeMs) || 0;
+            if (value >= 40000) return 1024;
+            if (value >= 20000) return 512;
+            if (value >= 12000) return 256;
+            if (value >= 8000) return 128;
+            if (value >= 4000) return 64;
+            if (value >= 2000) return 16;
+            return 8;
+        };
+
+        // Zeitanzeige "00.000" (ms) für Menü und Status.
+        const formatTimeCompact = (timeMs) => {
+            const value = Math.max(0, Math.floor(Number(timeMs) || 0));
+            const raw = String(value).padStart(5, "0");
+            return `${raw.slice(0, 2)}.${raw.slice(2)}`;
+        };
+
+        // Spielstatuszeile unterhalb der Live-Daten steuern (Check / Game Over).
+        const setGameState = (text = "") => {
+            if (!gameState) return;
+            const value = String(text || "").trim();
+            gameState.textContent = value || "\u00A0";
+        };
+
+        // Kapselt den kompletten Zustand der laufenden Engine-Anzeige.
         const engineTimer = (() => {
             let rafId = 0;
             let start = 0;
@@ -63,7 +107,8 @@ if (mediaUrls != null) {
 
             const formatTimeMs = (ms) => {
                 const value = Math.max(0, Math.floor(Number(ms) || 0));
-                return `${value} ms`;
+                const raw = String(value).padStart(5, "0");
+                return `${raw.slice(0, 2)}.${raw.slice(2)}`;
             };
 
             const formatTt = (mb) => {
@@ -97,6 +142,7 @@ if (mediaUrls != null) {
                 }
             };
 
+            // Rendert Time/TT/Depth/Nodes, gedrosselt auf 250ms.
             const renderStatus = (remainingMs, force = false) => {
                 if (!engineStatus) return;
                 const now = performance.now();
@@ -120,6 +166,7 @@ if (mediaUrls != null) {
                 engineStatus.textContent = `${timeText}  ${ttText}   ${depthText}   ${nodesText}`;
             };
 
+            // Animations-Loop für die obere Timebar.
             const tick = () => {
                 const now = performance.now();
                 const elapsed = now - start;
@@ -141,6 +188,7 @@ if (mediaUrls != null) {
             };
 
             return {
+                // Setzt den Idle-Zustand (vor Suchstart / im Menü).
                 configure(durationMs, options = {}) {
                     if (rafId) cancelAnimationFrame(rafId);
                     rafId = 0;
@@ -163,6 +211,7 @@ if (mediaUrls != null) {
                     }
                     renderStatus(statusRemainingMs, true);
                 },
+                // Startet die Suchanimation.
                 start(durationMs, options = {}) {
                     if (rafId) cancelAnimationFrame(rafId);
 
@@ -187,6 +236,7 @@ if (mediaUrls != null) {
                     renderStatus(duration, true);
                     rafId = requestAnimationFrame(tick);
                 },
+                // Übernimmt Progress-Updates aus dem Worker.
                 progress(progress = {}, options = {}) {
                     if (Number.isFinite(Number(options.ttMb))) {
                         ttMb = Number(options.ttMb);
@@ -207,6 +257,7 @@ if (mediaUrls != null) {
                     }
                     renderStatus(statusRemainingMs);
                 },
+                // Stoppt die Animation und übernimmt finale Suchwerte.
                 stop(remainingMs, durationMs, hard = false, options = {}) {
                     if (rafId) cancelAnimationFrame(rafId);
                     rafId = 0;
@@ -254,26 +305,110 @@ if (mediaUrls != null) {
             });
 
             const mL1 = new MoveList();
-            const ENGINE_TIME_MS = 12500;
+            const START_TIME_MS = 8000;
             const ENGINE_MIN_TIME_MS = 1000;
-            const ENGINE_TT_MB = 256;
             const BOOK_PAUSE_MS = 500;
-            engineTimer.configure(ENGINE_TIME_MS, { ttMb: ENGINE_TT_MB, displayTimeMs: ENGINE_TIME_MS });
+            const START_TT_MB = ttFromTimeMs(START_TIME_MS);
+            engineTimer.configure(START_TIME_MS, { ttMb: START_TT_MB, displayTimeMs: START_TIME_MS });
+
+            // GameController verbindet Board, Worker-Engine und UI-Callbacks.
             const c1 = new GameController(b1, mL1, {
-                engineTimeMs: ENGINE_TIME_MS,
+                engineTimeMs: START_TIME_MS,
                 engineMinTimeMs: ENGINE_MIN_TIME_MS,
-                engineTtMb: ENGINE_TT_MB,
+                engineTtMb: START_TT_MB,
                 bookPauseMs: BOOK_PAUSE_MS,
                 autoOpponent: true,
                 onEngineThinkStart: ({ durationMs, ttMb, displayTimeMs }) => engineTimer.start(durationMs, { ttMb, displayTimeMs }),
                 onEngineThinkProgress: ({ depth, nodes, elapsedMs, ttMb }) => engineTimer.progress({ depth, nodes, elapsedMs }, { ttMb }),
                 onEngineThinkEnd: ({ remainingMs, durationMs, ttMb, result }) => engineTimer.stop(remainingMs, durationMs, false, { ttMb, result }),
-                onGameEnd: () => engineTimer.stop(0, 1, true, {})
+                onGameState: (state) => setGameState(state?.message || ""),
+                onGameEnd: (outcome) => {
+                    engineTimer.stop(0, 1, true, {});
+                    setGameState(outcome?.message || "Game over.");
+                }
             });
 
-            getPuzzleFen().then((x)=> c1.initPosition(x));
+            const setup = {
+                playerColor: "w",
+                showLegalMoves: false,
+                timeMs: START_TIME_MS
+            };
+            setGameState("");
 
-            // global machen:
+            // Zeichnet den aktuellen Startdialog-Zustand in die UI zurück.
+            const renderSetup = () => {
+                const ttMb = ttFromTimeMs(setup.timeMs);
+                if (timeRange) {
+                    timeRange.value = String(setup.timeMs);
+                }
+                if (timeText) {
+                    timeText.textContent = formatTimeCompact(setup.timeMs);
+                }
+                if (colorWhiteButton && colorBlackButton) {
+                    colorWhiteButton.classList.toggle("active", setup.playerColor === "w");
+                    colorBlackButton.classList.toggle("active", setup.playerColor === "b");
+                }
+                if (legalMovesButton) {
+                    legalMovesButton.classList.toggle("active", setup.showLegalMoves);
+                    legalMovesButton.textContent = `Show legal moves: ${setup.showLegalMoves ? "ON" : "OFF"}`;
+                }
+                engineTimer.configure(setup.timeMs, { ttMb, displayTimeMs: setup.timeMs });
+            };
+
+            renderSetup();
+
+            colorWhiteButton?.addEventListener("click", () => {
+                setup.playerColor = "w";
+                renderSetup();
+            });
+
+            colorBlackButton?.addEventListener("click", () => {
+                setup.playerColor = "b";
+                renderSetup();
+            });
+
+            timeRange?.addEventListener("input", () => {
+                const value = Number(timeRange.value);
+                setup.timeMs = Number.isFinite(value) ? Math.max(1000, Math.min(60000, Math.floor(value))) : START_TIME_MS;
+                renderSetup();
+            });
+
+            legalMovesButton?.addEventListener("click", () => {
+                setup.showLegalMoves = !setup.showLegalMoves;
+                renderSetup();
+            });
+
+            startButton?.addEventListener("click", async () => {
+                if (startButton.disabled) return;
+                startButton.disabled = true;
+
+                const ttMb = ttFromTimeMs(setup.timeMs);
+                const isBlack = setup.playerColor === "b";
+
+                b1.showLegalMoves = setup.showLegalMoves;
+                c1.engineTimeMs = setup.timeMs;
+                c1.engineTtMb = ttMb;
+
+                c1.initPosition(getStartFen());
+                b1.myColor = setup.playerColor;
+                setGameState("");
+
+                if (b1.isFlipped !== isBlack) {
+                    b1.flipBoard();
+                }
+
+                engineTimer.configure(setup.timeMs, { ttMb, displayTimeMs: setup.timeMs });
+
+                if (startOverlay) {
+                    startOverlay.classList.remove("show");
+                    startOverlay.setAttribute("aria-hidden", "true");
+                }
+
+                // Wenn der Mensch Schwarz spielt, startet Weiß (Engine) direkt.
+                await c1.syncAutoOpponentForPlayer(setup.playerColor);
+            });
+
+            // Debug-Hooks für Konsole.
             window.c1 = c1;
             window.getStartFen = getStartFen;
             window.getPuzzleFen = getPuzzleFen;

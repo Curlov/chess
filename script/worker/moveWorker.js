@@ -1,12 +1,14 @@
 // worker/moveWorker.js
 import init, { get_valid_moves, apply_move, search, search_with_history, set_root_eval_debug } from "../engine/pkg/chess_engine.js";
 
+// WASM initialisieren (einmalig); alle Worker-Aktionen warten darauf.
 const wasmReady = init().catch((err) => {
     console.error("WASM init failed:", err);
     throw err;
 });
 
 const openingBookUrl = new URL("../engine/openingBook/opening_book_1000.json", import.meta.url);
+// Eröffnungsbuch lazy laden; Fehler deaktivieren nur das Book, nicht den Worker.
 const openingBookReady = (async () => {
     try {
         const res = await fetch(openingBookUrl);
@@ -32,9 +34,11 @@ const bookState = {
     lastHistory: ""
 };
 
+// Such-IDs für saubere Zuordnung von Progress-Events.
 let searchSeq = 0;
 let activeSearchId = 0;
 
+/** Normalisiert numerische Payload-Werte auf nicht-negative Integer. */
 function toSafeInt(value) {
     const n = Number(value);
     return Number.isFinite(n) && n >= 0 ? Math.floor(n) : 0;
@@ -42,6 +46,7 @@ function toSafeInt(value) {
 
 globalThis.__engine_progress = (depth, nodesCompleted, nodesTotal, elapsedMs) => {
     if (!activeSearchId) return;
+    // Progress nur für die aktuell laufende Suche senden.
     self.postMessage({
         action: "search-progress",
         searchId: activeSearchId,
@@ -53,10 +58,12 @@ globalThis.__engine_progress = (depth, nodesCompleted, nodesTotal, elapsedMs) =>
     });
 };
 
+/** Normiert History-Strings, damit Book-Lookup stabil bleibt. */
 function normalizeHistory(history) {
     return String(history || "").trim().replace(/\s+/g, " ");
 }
 
+/** Erkennt Partiewechsel/History-Sprünge -> Book-State zurücksetzen. */
 function shouldResetBook(gameId, history) {
     if (bookState.gameId !== gameId) return true;
     if (history.length < bookState.lastHistory.length) return true;
@@ -64,6 +71,7 @@ function shouldResetBook(gameId, history) {
     return false;
 }
 
+/** LAN (z. B. "e2") zu Feldindex 0..63. */
 function lanToField(lan) {
     if (!lan || lan.length !== 2) return null;
     const file = lan.charCodeAt(0) - 97; // 'a'
@@ -72,6 +80,7 @@ function lanToField(lan) {
     return rank * 8 + file;
 }
 
+/** UCI-String ("e2e4", optional Promo) in Felder zerlegen. */
 function parseUci(uci) {
     if (typeof uci !== "string") return null;
     const s = uci.trim();
@@ -108,6 +117,7 @@ function pickLegalBookMove(fen, moves) {
     }
     entries.sort((a, b) => b.score - a.score);
 
+    // Pro Ausgangsfeld die legalen Ziele nur einmal vom WASM holen.
     const cache = new Map();
     for (const entry of entries) {
         const parsed = parseUci(entry.uci);
@@ -124,6 +134,7 @@ function pickLegalBookMove(fen, moves) {
     return "";
 }
 
+/** Liefert den besten legalen Buchzug oder null (falls nicht verfügbar). */
 async function getBookMove(fen, historyUci, gameId, bookEnabled) {
     if (!bookEnabled) return null;
 
@@ -154,6 +165,7 @@ async function getBookMove(fen, historyUci, gameId, bookEnabled) {
     return bestMove;
 }
 
+/** Sammelt alle pseudo-legale Züge für Perft-Rekursion. */
 function collectMoves(fen) {
     const moves = [];
     for (let from = 0; from < 64; from++) {
@@ -166,6 +178,7 @@ function collectMoves(fen) {
     return moves;
 }
 
+/** Parst die Brettkomponente aus FEN in 64er-Array. */
 function parseBoard(fen) {
     const boardPart = String(fen || "").split(/\s+/)[0];
     if (!boardPart) return null;
@@ -191,6 +204,7 @@ function parseBoard(fen) {
     return board;
 }
 
+/** Prüft, ob ein Zug auf der Zielreihe zur Bauernumwandlung führt. */
 function isPromotionMove(piece, to) {
     if (!piece) return false;
     const toRank = Math.floor(to / 8);
@@ -199,6 +213,7 @@ function isPromotionMove(piece, to) {
     return false;
 }
 
+/** Rekursive Perft-Implementierung im Worker (JS-Seite). */
 function perft(fen, depth) {
     if (depth <= 0) return 1;
     const board = parseBoard(fen);
@@ -249,6 +264,7 @@ self.onmessage = async function (e) {
     const data = e.data || {};
     const action = data.action || "moves";
 
+    // Jede Aktion wartet auf abgeschlossene WASM-Initialisierung.
     await wasmReady;
 
     if (action === "moves") {
@@ -294,6 +310,7 @@ self.onmessage = async function (e) {
             return;
         }
 
+        // Jede Suche erhält eine eindeutige ID (Result + Progress).
         const searchId = ++searchSeq;
 
         try {
@@ -304,6 +321,7 @@ self.onmessage = async function (e) {
             console.warn("set_root_eval_debug failed:", err);
         }
 
+        // Eröffnungsbuch hat Vorrang, wenn aktiv und legaler Zug gefunden wurde.
         const bookMove = await getBookMove(fen, uciHistory, gameId, bookEnabled);
         if (bookMove) {
             self.postMessage({

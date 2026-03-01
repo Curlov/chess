@@ -1,4 +1,11 @@
+/**
+ * Lädt Bild- und Audio-Assets vor dem Start der Partie.
+ * Während des Ladevorgangs wird der Preloader-Prozentbalken aktualisiert.
+ */
 export default class MediaLoader {
+    /**
+     * @param {string[]} mediaUrls Liste aller zu ladenden Medien-Dateien
+     */
     constructor(mediaUrls) {
         this.mediaUrls = mediaUrls;
         this.loadedMedia = {}; // Object für geladene Medien (Bilder und Audiodateien)
@@ -6,6 +13,10 @@ export default class MediaLoader {
         this.progressText = document.querySelector(".progress-text");
     }
 
+    /**
+     * Lädt alle konfigurierten Medien parallel.
+     * Rückgabe: Promise, das erst auflöst, wenn alle Assets verfügbar sind.
+     */
     loadMedia() {
         return Promise.all(this.mediaUrls.map(url => {
             return new Promise((resolve, reject) => {
@@ -39,6 +50,10 @@ export default class MediaLoader {
         }));
     }
 
+    /**
+     * Aktualisiert den sichtbaren Ladefortschritt und blendet
+     * nach vollständigem Laden den Preloader aus.
+     */
     updateProgress(loaded) {
         const progress = (loaded / this.mediaUrls.length) * 100;
         this.progressBar.style.width = `${progress}%`;
@@ -55,6 +70,7 @@ export default class MediaLoader {
         }
     }
 
+    /** Liefert den Medien-Cache als Key->Asset-Map zurück. */
     getLoadedMedia() {
         return this.loadedMedia;
     }

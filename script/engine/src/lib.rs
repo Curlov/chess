@@ -2,6 +2,22 @@ use wasm_bindgen::prelude::*;
 use std::mem::size_of;
 use std::cell::{Cell, RefCell};
 
+// =====================================================================================
+// Rust-WASM Chess Engine
+// -------------------------------------------------------------------------------------
+// Diese Datei enthält den vollständigen Engine-Kern:
+// - Bitboard-Basics und Angriffs-Tabellen
+// - FEN-Parser / Zug-Generierung / Legalitätsprüfung
+// - Bewertung (MG/EG + Struktur + King Safety)
+// - Alpha-Beta-Suche mit Quiescence, TT, Move-Ordering, LMR, Null-Move
+// - WASM-Exports für Browser-Worker (`get_valid_moves`, `apply_move`, `search`)
+//
+// Konventionen:
+// - Feldindizes: a1=0 .. h8=63
+// - Großbuchstaben = Weiß, Kleinbuchstaben = Schwarz
+// - Scores sind stets aus Sicht von `side_to_move`
+// =====================================================================================
+
 #[wasm_bindgen]
 extern "C" {
     #[wasm_bindgen(js_namespace = Date, js_name = now)]
@@ -1885,6 +1901,9 @@ fn root_eval_breakdown_json(pos: &mut Position) -> String {
 }
 
 fn generate_legal_moves_into(pos: &mut Position, out: &mut Vec<(Move, Option<char>)>) {
+    // Erst pseudo-legale Züge je Figur erzeugen, dann per `is_move_legal`
+    // auf echte legale Züge filtern. Promotionen werden in 4 Varianten
+    // (q/r/b/n) explizit aufgefächert.
     out.clear();
     let mut piece_moves: Vec<Move> = Vec::with_capacity(32);
     for from in 0u8..64u8 {
@@ -1909,6 +1928,8 @@ fn generate_legal_moves(pos: &mut Position) -> Vec<(Move, Option<char>)> {
     out
 }
 
+// Wendet einen Zug funktional (ohne Seiteneffekte am Original) auf Position + Hash an.
+// Rückgabe: neue Position und der inkrementell aktualisierte Zobrist-Hash.
 fn apply_move_to_position(
     pos: &Position,
     mv: Move,
@@ -2075,6 +2096,8 @@ fn apply_move_to_position(
     }, new_hash))
 }
 
+// Undo-Paket für make/unmake:
+// enthält exakt die Informationen, die zur verlustfreien Rücknahme nötig sind.
 struct Undo {
     captured: Option<char>,
     captured_sq: Option<u8>,
@@ -2085,7 +2108,13 @@ struct Undo {
     moved_piece: char,
 }
 
+// Führt einen Zug in-place aus und liefert Undo-Daten für die Rücknahme.
+// Zentral für Suchknoten, da hier keine kompletten Positionskopien entstehen.
 fn make_move_in_place(pos: &mut Position, mv: Move, promotion: Option<char>) -> Option<Undo> {
+    // Warum in-place + Undo?
+    // In der Suche wird diese Funktion millionenfach aufgerufen.
+    // In-place vermeidet Heap-/Copy-Overhead und ist damit deutlich schneller
+    // als pro Knoten eine komplette Position zu klonen.
     let piece = pos.board[mv.from as usize]?;
     let color = piece_color(piece);
     if color != pos.side_to_move {
@@ -2150,6 +2179,9 @@ fn make_move_in_place(pos: &mut Position, mv: Move, promotion: Option<char>) -> 
         add_piece(&mut pos.bb, rook_piece, rook_to);
     }
 
+    // Warum Castling-Rechte hier sofort aktualisieren?
+    // Damit Folgeknoten (insb. TT-Hash und Legality) immer den korrekten
+    // Zustand sehen und keine impliziten Sonderfälle benötigen.
     let mut castling = pos.castling;
     if piece.to_ascii_lowercase() == 'k' {
         if color == Color::White {
@@ -2179,6 +2211,8 @@ fn make_move_in_place(pos: &mut Position, mv: Move, promotion: Option<char>) -> 
         }
     }
 
+    // Warum EP-Feld nur bei Doppelzug setzen?
+    // Nur dann ist im unmittelbar nächsten Halbzug ein EP-Capture legal.
     let mut new_ep = None;
     if piece.to_ascii_lowercase() == 'p' {
         let from_rank = mv.from / 8;
@@ -2190,6 +2224,9 @@ fn make_move_in_place(pos: &mut Position, mv: Move, promotion: Option<char>) -> 
         }
     }
 
+    // Warum halfmove hier pflegen?
+    // Für 50-Züge-Regel und Repetition-Einordnung muss der Counter
+    // auf jedem Knoten korrekt fortgeführt werden.
     let mut halfmove = pos.halfmove;
     let is_capture = match mv.kind {
         MoveKind::EnPassant => true,
@@ -2215,7 +2252,11 @@ fn make_move_in_place(pos: &mut Position, mv: Move, promotion: Option<char>) -> 
     Some(undo)
 }
 
+// Nimmt einen zuvor ausgeführten Zug per Undo deterministisch zurück.
 fn unmake_move_in_place(pos: &mut Position, mv: Move, _promotion: Option<char>, undo: Undo) {
+    // Warum deterministisches Unmake?
+    // Suchknoten dürfen keine schleichenden Seiteneffekte hinterlassen.
+    // Exaktes Rücksetzen ist Grundlage für korrekte Bewertung/TT.
     pos.side_to_move = pos.side_to_move.opposite();
     pos.castling = undo.prev_castling;
     pos.ep = undo.prev_ep;
@@ -2255,6 +2296,8 @@ fn unmake_move_in_place(pos: &mut Position, mv: Move, _promotion: Option<char>, 
     add_piece(&mut pos.bb, undo.moved_piece, mv.from);
 }
 
+// Inkrementelle Hash-Aktualisierung passend zu make_move_in_place.
+// Dadurch bleibt TT-Adressierung ohne teuren Full-Rehash stabil.
 fn update_hash_after_move(
     hash: u64,
     zob: &Zobrist,
@@ -2262,6 +2305,9 @@ fn update_hash_after_move(
     pos_after: &Position,
     mv: Move,
 ) -> u64 {
+    // Warum inkrementell statt Full-Rehash?
+    // Hash wird pro Knoten sehr oft gebraucht; XOR-Deltas sind
+    // wesentlich billiger als ein erneutes Traversieren des Boards.
     let mut new_hash = hash;
     new_hash ^= zob.side;
     new_hash ^=
@@ -2304,6 +2350,7 @@ fn update_hash_after_move(
     new_hash
 }
 
+// Interne Zugrepräsentation in UCI-Text umwandeln (z. B. "e2e4", "a7a8q").
 fn move_to_uci(mv: Move, promotion: Option<char>) -> String {
     let mut out = String::new();
     out.push_str(&field_to_lan(mv.from));
@@ -2314,6 +2361,8 @@ fn move_to_uci(mv: Move, promotion: Option<char>) -> String {
     out
 }
 
+// Liefert bei Capture-Zügen das tatsächlich geschlagene Feld/Piece
+// (inkl. korrektem EP-Capture-Feld).
 fn capture_info(pos: &Position, mv: Move) -> Option<(u8, char)> {
     match mv.kind {
         MoveKind::EnPassant => {
@@ -2328,10 +2377,12 @@ fn capture_info(pos: &Position, mv: Move) -> Option<(u8, char)> {
     }
 }
 
+// Vereinfachter Capture-Check über `capture_info`.
 fn move_is_capture(pos: &Position, mv: Move) -> bool {
     capture_info(pos, mv).is_some()
 }
 
+// Kompakter Key für Killer-/History-Heuristiken.
 fn move_key(mv: Move, promo: Option<char>) -> (u8, u8, u8) {
     (mv.from, mv.to, encode_promo(promo))
 }
@@ -2421,6 +2472,9 @@ fn least_valuable_attacker(pos: &Position, sq: u8, occ: u64, side: Color) -> Opt
 }
 
 fn see(pos: &Position, mv: Move, promo: Option<char>) -> i32 {
+    // SEE (Static Exchange Evaluation):
+    // simuliert rein materialbasiert die Schlagabfolge auf dem Zielfeld,
+    // um "schlechte" Captures im Move-Ordering/pruning zu erkennen.
     let from = mv.from;
     let to = mv.to;
     let Some(moved_piece) = pos.board[from as usize] else {
@@ -2494,6 +2548,7 @@ fn is_quiet_move(pos: &Position, mv: Move, promo: Option<char>) -> bool {
     !move_is_capture(pos, mv)
 }
 
+// Killer-Heuristik: merkt sich je Ply die besten fail-high Quiet-Moves.
 fn update_killers(ctx: &mut SearchContext, ply: i32, key: (u8, u8, u8)) {
     if ply < 0 {
         return;
@@ -2509,6 +2564,7 @@ fn update_killers(ctx: &mut SearchContext, ply: i32, key: (u8, u8, u8)) {
     ctx.killers[idx][0] = Some(key);
 }
 
+// History-Heuristik: verstärkt Quiet-Moves, die auf tieferen Ebenen gut waren.
 fn update_history_heur(ctx: &mut SearchContext, color: Color, from: u8, to: u8, depth: u32) {
     let c = if color == Color::White { 0 } else { 1 };
     let entry = &mut ctx.history_heur[c][from as usize][to as usize];
@@ -2526,6 +2582,9 @@ fn has_non_pawn_material(pos: &Position, color: Color) -> bool {
 
 #[inline]
 fn lmr_reduction(depth: u32, move_index: usize) -> u32 {
+    // Warum LMR stufenweise?
+    // Späte, ruhige Züge sind statistisch seltener best. Daher dort
+    // aggressiver reduzieren, aber bei kleinen Tiefen konservativ bleiben.
     let mut r = 1u32;
     if depth >= 5 && move_index > 4 {
         r += 1;
@@ -2559,6 +2618,9 @@ impl MoveOrderScratch {
 }
 
 fn capture_score(pos: &Position, mv: Move, promo: Option<char>) -> i32 {
+    // Warum SEE in der Capture-Bewertung?
+    // MVV-LVA allein überschätzt oft "giftige" Captures.
+    // SEE hilft, taktisch schlechte Schläge früh nach hinten zu sortieren.
     let mut score = 0;
     if let Some(p) = promo {
         score += 5000 + piece_value(p.to_ascii_lowercase());
@@ -2577,6 +2639,8 @@ fn capture_score(pos: &Position, mv: Move, promo: Option<char>) -> i32 {
     }
 }
 
+// Sortiert Züge nach Hash/PV, Captures(SEE), Killern, History-Heuristik.
+// Ziel: früh möglichst starke Kandidaten testen -> bessere Alpha-Beta-Cuts.
 fn order_moves_in_place(
     pos: &Position,
     moves: &mut Vec<(Move, Option<char>)>,
@@ -2586,6 +2650,12 @@ fn order_moves_in_place(
     history_heur: Option<&[[[i32; 64]; 64]; 2]>,
     scratch: &mut MoveOrderScratch,
 ) {
+    // Warum diese Reihenfolge?
+    // 1) Hash/PV-Move zuerst -> oft sofort guter Alpha-Boost oder Cutoff.
+    // 2) Taktische Züge (SEE-sortiert)
+    // 3) Killer-Moves
+    // 4) Quiet-History
+    // Ergebnis: maximaler Cutoff-Effekt bei minimalem Sortieraufwand.
     let pv_best = pv_move;
     let tt_best = tt_entry.and_then(entry_best_move);
     let hash_best = if tt_best.is_some() { tt_best } else { pv_best };
@@ -2634,6 +2704,9 @@ fn order_moves_in_place(
 
     scratch.captures.sort_by(|a, b| b.0.cmp(&a.0));
 
+    // Warum Partial-Sort bei Quiets?
+    // Vollsortierung aller ruhigen Züge kostet Zeit, bringt aber wenig.
+    // Für Alpha-Beta reichen die vorderen Kandidaten meist aus.
     const QUIET_SORT_LIMIT: usize = 12;
     if scratch.quiet.len() > 1 {
         if scratch.quiet.len() > QUIET_SORT_LIMIT {
@@ -2663,6 +2736,8 @@ fn order_moves_in_place(
     moves.append(&mut scratch.rest);
 }
 
+// Erzeugt nur "taktische" Züge für Quiescence:
+// Captures + Promotions (keine ruhigen Züge).
 fn generate_tactical_moves_into(pos: &mut Position, out: &mut Vec<(Move, Option<char>)>) {
     out.clear();
     let mut piece_moves: Vec<Move> = Vec::with_capacity(32);
@@ -2706,6 +2781,8 @@ fn splitmix64(seed: &mut u64) -> u64 {
     z ^ (z >> 31)
 }
 
+// Zobrist-Tabelle: Zufallszahlen für Piece-Square, Side, Castling, EP-File.
+// Dient der Hash-Bildung für TT und Repetitions-Erkennung.
 struct Zobrist {
     piece_sq: [[u64; 64]; 12],
     side: u64,
@@ -2778,6 +2855,8 @@ fn compute_hash(pos: &Position, zob: &Zobrist) -> u64 {
     h
 }
 
+// TT-Bound-Typen:
+// EXACT = genauer Wert, LOWER = Fail-High-Untergrenze, UPPER = Fail-Low-Obergrenze.
 const TT_BOUND_EXACT: u8 = 0;
 const TT_BOUND_LOWER: u8 = 1;
 const TT_BOUND_UPPER: u8 = 2;
@@ -2811,6 +2890,7 @@ impl Default for TTEntry {
 
 const TT_BUCKET_SIZE: usize = 4;
 
+// Einfache Bucket-Transposition-Table mit Ersatzstrategie nach Alter/Tiefe.
 struct TT {
     entries: Vec<TTEntry>,
     mask: usize,
@@ -2966,6 +3046,8 @@ fn tt_cutoff_value(entry: TTEntry, depth: u32, alpha: i32, beta: i32, ply: i32) 
     }
 }
 
+// Thread-lokaler Suchzustand, der über Aufrufe hinweg wiederverwendet wird
+// (TT, Killer, History-Heuristik, gecachte History-Hashes).
 struct TTState {
     mb: u32,
     gen: u8,
@@ -3011,6 +3093,8 @@ where
     })
 }
 
+// Laufender Suchkontext pro Root-Search.
+// Enthält Knoten-/Zeitstände, Heuristiken und temporäre Buffers.
 struct SearchContext {
     nodes: u64,
     completed_nodes: u64,
@@ -3093,12 +3177,16 @@ fn emit_progress(ctx: &mut SearchContext, force: bool) {
 
 #[inline]
 fn should_stop(ctx: &mut SearchContext) -> bool {
+    // Zeitprüfung nur in Intervallen, um Overhead gering zu halten.
+    // Gleichzeitig in diesem Takt Progress-Events zur UI schicken.
     if ctx.stop {
         return true;
     }
     if ctx.time_limit_ms <= 0.0 {
         return false;
     }
+    // Warum knotenbasiertes Intervall?
+    // Systemzeit abfragen ist teuer; daher nur periodisch prüfen.
     if (ctx.nodes & (TIME_CHECK_NODE_INTERVAL - 1)) != 0 {
         return false;
     }
@@ -3141,6 +3229,9 @@ fn quiescence(
     hash: u64,
     ply: i32,
 ) -> i32 {
+    // Quiescence-Suche:
+    // erweitert Blätter mit taktischen Zügen, damit "noisy" Positionen
+    // nicht mit unrealistischem Stand-Pat bewertet werden.
     if ctx.stop {
         return 0;
     }
@@ -3239,6 +3330,11 @@ fn negamax(
     hash: u64,
     ply: i32,
 ) -> i32 {
+    // Hauptsuchroutine (Alpha-Beta im Negamax-Format) mit:
+    // - TT-Probe/Store
+    // - Null-Move-Pruning
+    // - LMR (Late Move Reductions)
+    // - Killer/History-Heuristik
     if ctx.stop {
         return 0;
     }
@@ -3267,6 +3363,7 @@ fn negamax(
         }
     }
 
+    // Hinweis: Quiescence wird aus negamax(depth==0) aufgerufen.
     if depth == 0 {
         return quiescence(pos, alpha, beta, ctx, tt, zob, hash, ply);
     }
@@ -3274,6 +3371,8 @@ fn negamax(
     let in_check = is_in_check(pos, pos.side_to_move);
     let is_pv = alpha.saturating_add(1) < beta;
 
+    // Warum Null-Move-Pruning nur unter Bedingungen?
+    // In Schachnähe/PV oder ohne Restmaterial ist Null-Move unzuverlässiger.
     if depth >= 3
         && !is_pv
         && !in_check
@@ -3337,6 +3436,9 @@ fn negamax(
     let orig_alpha = alpha;
     let mut best = -INF_SCORE;
     let mut best_move: Option<(Move, Option<char>)> = None;
+    // Warum PVS (Principal Variation Search)?
+    // Erster Zug mit vollem Fenster, Folgezüge zunächst im Nullfenster.
+    // Spart deutlich Suchaufwand, wenn Ordnung gut ist.
     let mut first = true;
     let mut move_index: usize = 0;
     for (mv, promo) in moves.iter().copied() {
@@ -3351,6 +3453,8 @@ fn negamax(
         history_push(ctx, next_hash);
         let extend = gives_check && depth <= 3;
         let base_depth = depth - 1 + if extend { 1 } else { 0 };
+        // Warum LMR nur für späte ruhige Züge?
+        // Harte/taktische Züge und frühe Kandidaten behalten Volltiefe.
         let use_lmr = !first
             && ply > 0
             && base_depth >= 3
@@ -3435,6 +3539,8 @@ fn search_depth(
     beta: i32,
     pv_move: Option<(u8, u8, Option<char>)>,
 ) -> (i32, Option<(Move, Option<char>)>, bool) {
+    // Root-Suche für eine fixe Tiefe.
+    // Liefert Score, besten Zug und ggf. "repetition avoided"-Flag.
     if pos.halfmove >= 100 {
         return (0, None, false);
     }
@@ -3467,6 +3573,8 @@ fn search_depth(
     let orig_alpha = alpha;
     let mut best = None;
     let mut best_score = -INF_SCORE;
+    // Root-spezifisch: Wir merken uns, ob der aktuell beste Zug
+    // in eine 3-fach Wiederholung führt.
     let mut best_is_rep = false;
     let mut best_non_rep_non_losing: Option<(Move, Option<char>)> = None;
     let mut best_non_rep_non_losing_score = -INF_SCORE;
@@ -3483,6 +3591,8 @@ fn search_depth(
         let Some(undo) = make_move_in_place(pos, mv, promo) else { continue; };
         let next_hash = update_hash_after_move(hash, zob, &undo, pos, mv);
         history_push(ctx, next_hash);
+        // Warum Repetition schon am Root auswerten?
+        // Damit wir bei Bedarf nicht verlierende Alternativen bevorzugen können.
         let is_rep_draw = history_count(ctx, next_hash, pos.halfmove) >= 3;
         let score = if first {
             -negamax(pos, depth - 1, -beta, -alpha, ctx, tt, zob, next_hash, 1)
@@ -3532,6 +3642,9 @@ fn search_depth(
 
     let mut chosen_score = best_score;
     let mut chosen_move = best;
+    // Warum "rep_avoid"?
+    // Falls bester Zug nur Remis durch Wiederholung liefert, nehmen wir
+    // optional einen nicht-verlierenden Nicht-Rep-Zug für menschlicheres Spiel.
     if !ctx.stop && best_is_rep {
         if let Some(mv) = best_non_rep_non_losing {
             chosen_score = best_non_rep_non_losing_score;
@@ -3540,6 +3653,8 @@ fn search_depth(
         }
     }
 
+    // Warum leichter Root-Contempt?
+    // Verhindert in ausgeglichenen Lagen ein zu frühes "Einrasten" in Remislinien.
     const ROOT_CONTEMPT: i32 = 10;
     const ROOT_CONTEMPT_THRESHOLD: i32 = 15;
     if !ctx.stop && best_is_rep && chosen_score.abs() < ROOT_CONTEMPT_THRESHOLD {
@@ -3550,6 +3665,8 @@ fn search_depth(
     (chosen_score, chosen_move, rep_avoid_used)
 }
 
+// Baut die Hash-Historie aus FEN-Text mit kleinem Cache,
+// damit Repetitionsprüfung bei wiederholten Suchen günstiger bleibt.
 fn build_history_cached(state: &mut TTState, history: &str, zob: &Zobrist, root_hash: u64) -> Vec<u64> {
     let mut cache_updated = false;
     if state.history_cache_raw != history {
@@ -3598,6 +3715,7 @@ fn build_history_cached(state: &mut TTState, history: &str, zob: &Zobrist, root_
     out
 }
 
+// Baut aus TT-Bestzügen eine PV-Zeile für die Ausgabe.
 fn build_pv_line(
     pos: &Position,
     tt: &Option<TT>,
@@ -3660,6 +3778,8 @@ fn build_pv_line(
 }
 
 fn search_impl(fen: &str, depth: u32, time_ms: u32, tt_mb: u32, history: &str) -> String {
+    // Zentraler Such-Entry für beide WASM-Exports.
+    // Enthält iterative Deepening + Aspiration Windows + JSON-Ausgabeaufbau.
     let mut pos = match parse_fen(fen) {
         Some(p) => p,
         None => return "{\"error\":\"invalid fen\"}".to_string(),
@@ -3738,6 +3858,8 @@ fn search_impl(fen: &str, depth: u32, time_ms: u32, tt_mb: u32, history: &str) -
                 let mut rep_avoid = false;
 
                 if USE_ASPIRATION && d > 1 {
+                    // Aspiration-Window um den letzten Score:
+                    // schneller bei stabilen Positionen, fallback auf Vollfenster.
                     let mut window = ASP_WINDOW;
                     let mut alpha = (last_score - window).max(-INF_SCORE);
                     let mut beta = (last_score + window).min(INF_SCORE);

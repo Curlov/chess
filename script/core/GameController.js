@@ -7,6 +7,13 @@ import {
     getPuzzleFen  
 } from '../utils/utilitys.js';
 
+/**
+ * Orchestriert das komplette Spiel:
+ * - Board-Interaktion (Mensch)
+ * - Worker-Engine (Zuggenerierung, Suche, applyMove)
+ * - Historie, FEN-Status und Spielende
+ * - UI-Callbacks (Engine-Timer, GameState, GameEnd)
+ */
 export default class GameController {
     constructor(board, moveList, options = {}) {
         this.board    = board;
@@ -25,7 +32,8 @@ export default class GameController {
             onEngineThinkStart = null,
             onEngineThinkProgress = null,
             onEngineThinkEnd = null,
-            onGameEnd = null
+            onGameEnd = null,
+            onGameState = null
         } = options || {};
 
         this.engineTimeMs = engineTimeMs;
@@ -37,6 +45,7 @@ export default class GameController {
         this.onEngineThinkProgress = typeof onEngineThinkProgress === "function" ? onEngineThinkProgress : null;
         this.onEngineThinkEnd = typeof onEngineThinkEnd === "function" ? onEngineThinkEnd : null;
         this.onGameEnd = typeof onGameEnd === "function" ? onGameEnd : null;
+        this.onGameState = typeof onGameState === "function" ? onGameState : null;
 
         this.board.onUserMove = (from, to, capturedPiece) => {
             this.handleUserMove(from, to, capturedPiece);
@@ -53,7 +62,7 @@ export default class GameController {
         this.gameId = 0;
     }
 
-    // FEN initialisieren und rendern
+    // FEN initialisieren und rendern (neue Partie / neues Puzzle).
     initPosition(fen) {
         this.gameId += 1;
         this.baseFen     = fen;
@@ -64,7 +73,7 @@ export default class GameController {
         this.setPositionFromFen(fen);
     }
 
-    //FEN rendern
+    // Aktuelle FEN in Brettzustand + Metadaten überführen.
     setPositionFromFen(fen = null) {
         const targetFen = fen ?? this.currentFen;
         if (!targetFen) {
@@ -80,7 +89,7 @@ export default class GameController {
         this.board.setEnPassant(this.currentMeta.enpassant);
     }
 
-    // Navigation in der History
+    // Navigation in der History (Undo/Redo via Ply-Index).
     goToPly(plyIndex) {
         this.moveList.index = plyIndex;
 
@@ -102,6 +111,7 @@ export default class GameController {
 
     async handleUserMove(from, to, capturedPiece) {
         try {
+            // Sound + visuelle Capture-Animation je nach Zugart.
             if (capturedPiece) {
                 this.board.playSound('capture');
                 this.board.removePieceEffect(capturedPiece);
@@ -127,7 +137,7 @@ export default class GameController {
                 }
             }
 
-            // neue FEN aus dem Worker holen
+            // Zug regelkonform im Worker anwenden und neue FEN erhalten.
             const fenAfter = await this.engine.applyMove(fenBefore, from, to, promotion);
 
             console.log("handleUserMove:", { from, to, fenBefore, fenAfter });
@@ -149,6 +159,9 @@ export default class GameController {
                 return;
             }
 
+            // Falls Partie weiterläuft: optionalen "Check"-Hinweis melden.
+            this._reportCheckState(this.currentFen);
+
             if (this.autoOpponent) {
                 await this._autoOpponentMove();
             }
@@ -160,12 +173,13 @@ export default class GameController {
 
     async handleMoveStart(field, figure, color, fromSelection) {
         try {
-            
+            // Legale Ziele für die selektierte Figur abfragen.
             const moves = await this.engine.getValidMoves(this.currentFen, field);
             console.log("possible moves:", moves);
 
             if (!Array.isArray(moves)) return;
 
+            // Vorherige Markierungen immer erst zurücksetzen.
             this.board.clearHighlights?.();
 
             if ((fromSelection === 'mouse' && this.board.showSelectedField === true ) ||
@@ -187,6 +201,20 @@ export default class GameController {
 
     get sideToMove() {
         return this.currentMeta.moveRight;  // "w" oder "b"
+    }
+
+    async syncAutoOpponentForPlayer(playerColor = "w") {
+        const side = playerColor === "b" ? "b" : "w";
+        this.board.myColor = side;
+
+        // Falls der Spieler nicht am Zug ist, startet die Engine sofort.
+        if (!this.autoOpponent || !this.currentMeta) {
+            return;
+        }
+
+        if (this.currentMeta.moveRight !== side) {
+            await this._autoOpponentMove();
+        }
     }
 
     async perft(depth = 1, fen = null) {
@@ -230,6 +258,7 @@ export default class GameController {
         const safeDepth = safeTimeMs > 0 ? 0 : (Number.isFinite(d) && d > 0 ? d : 0);
         const safeTtMb = Number.isFinite(m) && m > 0 ? m : 0;
 
+        // Nur in der "echten" Partie (nicht bei Fremd-FEN) History/Book nutzen.
         const isCurrent = !fen || fen === this.currentFen;
         let history = "";
         let uciHistory = "";
@@ -306,6 +335,7 @@ export default class GameController {
 
         let result = null;
         let searchFailed = false;
+        // Leichtgewichtige Fortschrittsweitergabe an UI (ohne zusätzliche Suche).
         const handleProgress = (progress) => {
             if (!this.onEngineThinkProgress) return;
             const depth = Number(progress?.depth);
@@ -346,6 +376,7 @@ export default class GameController {
             return;
         }
 
+        // Optionaler Mindest-Think, damit die KI nicht "instant" wirkt.
         const minThinkMs = Math.max(0, Number(this.engineMinTimeMs) || 0);
         if (minThinkMs > 0) {
             const elapsedBeforeMove = performance.now() - thinkStart;
@@ -379,7 +410,13 @@ export default class GameController {
             return;
         }
 
-        if (this._isBookResult(result) && Number.isFinite(this.bookPauseMs) && this.bookPauseMs > 0) {
+        // Zusatzpause für Book-Moves nur dann, wenn keine Mindestzeit aktiv ist.
+        if (
+            this._isBookResult(result) &&
+            minThinkMs <= 0 &&
+            Number.isFinite(this.bookPauseMs) &&
+            this.bookPauseMs > 0
+        ) {
             if (this.onEngineThinkStart) {
                 this.onEngineThinkStart({
                     durationMs: this.bookPauseMs,
@@ -431,6 +468,8 @@ export default class GameController {
             console.log("[engine] result", result);
             return;
         }
+        // Für Anzeige/Logs verwenden wir depth+1, wenn auf nächster Tiefe
+        // bereits Knoten gezählt wurden (nodes_total > nodes_completed).
         const r = result.result && typeof result.result === "object" ? result.result : result;
         const nodesValue = r.nodes_total ?? r.nodesTotal ?? r.nodes ?? null;
         const nodesCompleted = r.nodes_completed ?? r.nodesCompleted ?? r.nodes ?? null;
@@ -485,6 +524,7 @@ export default class GameController {
         const hasScore = Number.isFinite(score);
         const MATE_SCORE_THRESHOLD = 29990;
 
+        // 50-Züge-Regel hat Vorrang vor Score-Heuristiken.
         if (Number.isFinite(halfmoveClock) && halfmoveClock >= 100) {
             return {
                 reason: "fifty_move_rule",
@@ -502,7 +542,7 @@ export default class GameController {
                 winner,
                 sideToMove,
                 score,
-                message: `${this._colorName(winner)} has won (checkmate).`
+                message: `${this._colorName(winner)} has won.`
             };
         }
 
@@ -553,6 +593,32 @@ export default class GameController {
         if (this.onGameEnd) {
             this.onGameEnd(outcome);
         }
+    }
+
+    _emitGameState(payload) {
+        if (!this.onGameState) return;
+        this.onGameState(payload || { type: "clear", message: "" });
+    }
+
+    // Meldet "Check" für sideToMove oder leert den Hinweis.
+    _reportCheckState(fen) {
+        const sideToMove = this._getSideToMove(fen);
+        if (!sideToMove) {
+            this._emitGameState({ type: "clear", message: "" });
+            return;
+        }
+
+        const inCheck = this._isSideInCheck(fen, sideToMove);
+        if (!inCheck) {
+            this._emitGameState({ type: "clear", sideToMove, message: "" });
+            return;
+        }
+
+        this._emitGameState({
+            type: "check",
+            sideToMove,
+            message: `${this._colorName(sideToMove)} is in check.`
+        });
     }
 
     _sleep(ms) {
@@ -607,6 +673,7 @@ export default class GameController {
             return;
         }
 
+        // Capture inkl. en-passant-Sonderfall auf UI-Ebene auflösen.
         let capturedPiece = this.board.getPieceAt(to);
         if (movingPiece.dataset.type?.toLowerCase() === "p") {
             if (this.board.enPassantField != null && Number(to) === this.board.enPassantField && !capturedPiece) {
@@ -656,12 +723,16 @@ export default class GameController {
             fenAfter
         });
 
-        await this._maybeReportGameEnd(this.currentFen, "after_engine_move");
+        const gameEnded = await this._maybeReportGameEnd(this.currentFen, "after_engine_move");
+        if (!gameEnded) {
+            this._reportCheckState(this.currentFen);
+        }
 
     }
 
     async _maybeReportGameEnd(fen, context = "game_end_probe") {
         const sideToMove = this._getSideToMove(fen);
+        // Früher Exit: triviales Remis (nur Könige).
         if (this._isKingsOnlyPosition(fen)) {
             this._reportOutcome({
                 reason: "insufficient_material",
@@ -674,6 +745,7 @@ export default class GameController {
         }
 
         const halfmoveClock = this._getHalfmoveClock(fen);
+        // 50-Züge-Regel direkt aus FEN ableiten.
         if (Number.isFinite(halfmoveClock) && halfmoveClock >= 100) {
             this._reportOutcome({
                 reason: "fifty_move_rule",
@@ -685,6 +757,7 @@ export default class GameController {
             return true;
         }
 
+        // Erst legal-move-Check, danach bei Bedarf Mini-Search für Einordnung.
         const hasLegalMove = await this._hasAnyLegalMove(fen);
         if (hasLegalMove !== false) {
             return false;
@@ -732,6 +805,123 @@ export default class GameController {
             return false;
         }
         return whiteKing === 1 && blackKing === 1;
+    }
+
+    _isSideInCheck(fen, side) {
+        const board = this._parseBoardArray(fen);
+        if (!board) return false;
+        const kingSquare = this._findKingSquare(board, side);
+        if (!Number.isFinite(kingSquare)) return false;
+        return this._isSquareAttacked(board, kingSquare, this._oppositeColor(side));
+    }
+
+    // Parsen der Brettkomponente aus FEN in ein 64-Felder-Array.
+    _parseBoardArray(fen) {
+        if (!fen || typeof fen !== "string") return null;
+        const boardPart = fen.trim().split(/\s+/)[0] || "";
+        if (!boardPart) return null;
+
+        const ranks = boardPart.split("/");
+        if (ranks.length !== 8) return null;
+
+        const board = new Array(64).fill(null);
+        let rank = 7;
+        for (const rankPart of ranks) {
+            let file = 0;
+            for (const ch of rankPart) {
+                if (ch >= "1" && ch <= "8") {
+                    file += Number(ch);
+                    continue;
+                }
+                if (file < 0 || file > 7 || rank < 0 || rank > 7) return null;
+                board[rank * 8 + file] = ch;
+                file += 1;
+            }
+            if (file !== 8) return null;
+            rank -= 1;
+        }
+        return board;
+    }
+
+    _findKingSquare(board, side) {
+        if (!Array.isArray(board)) return null;
+        const king = side === "w" ? "K" : "k";
+        for (let sq = 0; sq < 64; sq += 1) {
+            if (board[sq] === king) return sq;
+        }
+        return null;
+    }
+
+    _isSquareAttacked(board, targetSquare, attackerSide) {
+        if (!Array.isArray(board) || !Number.isFinite(targetSquare)) return false;
+        if (attackerSide !== "w" && attackerSide !== "b") return false;
+
+        const targetFile = targetSquare % 8;
+        const targetRank = Math.floor(targetSquare / 8);
+        const attackerIsWhite = attackerSide === "w";
+
+        const onBoard = (file, rank) => file >= 0 && file < 8 && rank >= 0 && rank < 8;
+        const at = (file, rank) => board[rank * 8 + file];
+
+        const pawnCandidates = attackerIsWhite
+            ? [[targetFile - 1, targetRank - 1], [targetFile + 1, targetRank - 1]]
+            : [[targetFile - 1, targetRank + 1], [targetFile + 1, targetRank + 1]];
+        const pawn = attackerIsWhite ? "P" : "p";
+        for (const [f, r] of pawnCandidates) {
+            if (onBoard(f, r) && at(f, r) === pawn) return true;
+        }
+
+        const knight = attackerIsWhite ? "N" : "n";
+        const knightOffsets = [
+            [1, 2], [2, 1], [2, -1], [1, -2],
+            [-1, -2], [-2, -1], [-2, 1], [-1, 2]
+        ];
+        for (const [df, dr] of knightOffsets) {
+            const f = targetFile + df;
+            const r = targetRank + dr;
+            if (onBoard(f, r) && at(f, r) === knight) return true;
+        }
+
+        const bishop = attackerIsWhite ? "B" : "b";
+        const rook = attackerIsWhite ? "R" : "r";
+        const queen = attackerIsWhite ? "Q" : "q";
+        const king = attackerIsWhite ? "K" : "k";
+
+        // Generic Ray-Scanner für Läufer-/Turm-/Damen-Linien.
+        const scan = (directions, attackers) => {
+            for (const [df, dr] of directions) {
+                let f = targetFile + df;
+                let r = targetRank + dr;
+                while (onBoard(f, r)) {
+                    const piece = at(f, r);
+                    if (piece) {
+                        if (attackers.has(piece)) return true;
+                        break;
+                    }
+                    f += df;
+                    r += dr;
+                }
+            }
+            return false;
+        };
+
+        if (scan([[1, 1], [1, -1], [-1, 1], [-1, -1]], new Set([bishop, queen]))) {
+            return true;
+        }
+        if (scan([[1, 0], [-1, 0], [0, 1], [0, -1]], new Set([rook, queen]))) {
+            return true;
+        }
+
+        for (let df = -1; df <= 1; df += 1) {
+            for (let dr = -1; dr <= 1; dr += 1) {
+                if (df === 0 && dr === 0) continue;
+                const f = targetFile + df;
+                const r = targetRank + dr;
+                if (onBoard(f, r) && at(f, r) === king) return true;
+            }
+        }
+
+        return false;
     }
 
     async _hasAnyLegalMove(fen) {

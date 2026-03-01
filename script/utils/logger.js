@@ -1,7 +1,9 @@
 // === Debug-Logger für Handy-Konsole ===
 (function () {
+    // Optionales Ausgabefeld (falls in HTML vorhanden)
     const logDiv = document.getElementById('log');
 
+    // Schreibt beliebige Log-Argumente robust als Text in das Panel.
     function logToPanel(...args) {
         if (!logDiv) return;
         const msg = args.map(a => {
@@ -18,6 +20,7 @@
         logDiv.scrollTop = logDiv.scrollHeight;
     }
 
+    // Originale Konsolenfunktionen sichern und danach erweitern.
     const origLog = console.log;
     const origErr = console.error;
 
@@ -35,6 +38,7 @@
         logToPanel('[UNCAUGHT ERROR]', e.message, e.filename + ':' + e.lineno);
     });
 
+    // Unbehandelte Promise-Rejections ebenfalls sichtbar machen.
     window.addEventListener('unhandledrejection', (e) => {
         logToPanel('[UNHANDLED PROMISE]', e.reason);
     });
