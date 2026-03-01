@@ -433,9 +433,20 @@ export default class GameController {
     _inferNoBestMoveOutcome(result, fenBefore) {
         const r = this._unwrapSearchResult(result);
         const sideToMove = this._getSideToMove(fenBefore);
+        const halfmoveClock = this._getHalfmoveClock(fenBefore);
         const score = Number(r?.score);
         const hasScore = Number.isFinite(score);
         const MATE_SCORE_THRESHOLD = 29990;
+
+        if (Number.isFinite(halfmoveClock) && halfmoveClock >= 100) {
+            return {
+                reason: "fifty_move_rule",
+                winner: null,
+                sideToMove,
+                score: hasScore ? score : 0,
+                message: "Draw (50-move rule)."
+            };
+        }
 
         if (hasScore && sideToMove && score <= -MATE_SCORE_THRESHOLD) {
             const winner = this._oppositeColor(sideToMove);
@@ -522,6 +533,14 @@ export default class GameController {
         return side === "w" || side === "b" ? side : null;
     }
 
+    _getHalfmoveClock(fen) {
+        if (!fen || typeof fen !== "string") return null;
+        const parts = fen.trim().split(/\s+/);
+        if (parts.length < 5) return null;
+        const halfmove = Number(parts[4]);
+        return Number.isFinite(halfmove) ? halfmove : null;
+    }
+
     async _applyEngineMove(uci, fenBefore) {
         const parsed = this._parseUciMove(uci);
         if (!parsed) {
@@ -595,6 +614,19 @@ export default class GameController {
     }
 
     async _maybeReportGameEnd(fen, context = "game_end_probe") {
+        const sideToMove = this._getSideToMove(fen);
+        const halfmoveClock = this._getHalfmoveClock(fen);
+        if (Number.isFinite(halfmoveClock) && halfmoveClock >= 100) {
+            this._reportOutcome({
+                reason: "fifty_move_rule",
+                winner: null,
+                sideToMove,
+                score: 0,
+                message: "Draw (50-move rule)."
+            }, null, context);
+            return true;
+        }
+
         const hasLegalMove = await this._hasAnyLegalMove(fen);
         if (hasLegalMove !== false) {
             return false;
