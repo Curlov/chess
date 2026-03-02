@@ -38,7 +38,13 @@ if (!device) {
 
 const useBackgroundImg = true;
 let sizeChessBoard = 900;
-const width  = window.innerWidth;
+const viewportWidths = [
+    window.innerWidth,
+    document.documentElement?.clientWidth,
+    document.body?.clientWidth,
+    window.visualViewport?.width
+].filter((value) => Number.isFinite(value) && value > 0);
+const width = Math.floor(Math.min(...viewportWidths));
 
 if (width <= sizeChessBoard) {
     sizeChessBoard = width;

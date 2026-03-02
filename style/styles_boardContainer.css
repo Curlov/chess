@@ -36,20 +36,33 @@
     user-select: none;
 }
 
-html  {
+html {
     height: 100%;
+    width: 100%;
+    margin: 0;
+    padding: 0;
     overflow: hidden;
+}
+
+body {
+    margin: 0;
+    padding: 0;
+    width: 100%;
 }
 
 .body {
     background-color: #232323;
     display: flex;
     flex-direction: column;
-    justify-content: center;
+    justify-content: flex-start;
     align-items: center;
-    height: 100vh;
+    width: 100%;
+    min-height: 100vh;
+    min-height: 100dvh;
     margin: 0;
+    padding: 50px 0 0;
     overflow: hidden; 
+    box-sizing: border-box;
 }
 
 .board-title {
@@ -382,7 +395,7 @@ html  {
 
 @media (max-width: 700px) {
     .body {
-        padding: 8px 0 10px;
+        padding: 50px 0 10px;
     }
 
     .board-title {
