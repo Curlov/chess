@@ -89,7 +89,8 @@ if (mediaUrls != null) {
             if (value >= 8000) return 128;
             if (value >= 4000) return 64;
             if (value >= 2000) return 16;
-            return 8;
+            if (value >= 500) return 4;
+            return 0;
         };
 
         // Einheitliches Zeitformat "00.000".
@@ -133,7 +134,7 @@ if (mediaUrls != null) {
 
             const formatTt = (mb) => {
                 const value = Math.max(0, Math.floor(Number(mb) || 0));
-                return String(value).padStart(4, "0");
+                return String(value).padStart(3, "0");
             };
 
             const formatDepth = (depth) => {
@@ -395,7 +396,7 @@ if (mediaUrls != null) {
 
             timeRange?.addEventListener("input", () => {
                 const value = Number(timeRange.value);
-                setup.timeMs = Number.isFinite(value) ? Math.max(1000, Math.min(60000, Math.floor(value))) : START_TIME_MS;
+                setup.timeMs = Number.isFinite(value) ? Math.max(125, Math.min(30000, Math.floor(value))) : START_TIME_MS;
                 renderSetup();
             });
 
