@@ -44,10 +44,19 @@ const viewportWidths = [
     document.body?.clientWidth,
     window.visualViewport?.width
 ].filter((value) => Number.isFinite(value) && value > 0);
+const viewportHeights = [
+    window.innerHeight,
+    document.documentElement?.clientHeight,
+    document.body?.clientHeight,
+    window.visualViewport?.height
+].filter((value) => Number.isFinite(value) && value > 0);
 const width = Math.floor(Math.min(...viewportWidths));
+const height = Math.floor(Math.min(...viewportHeights));
+const maxWidthFromHeight = Math.floor(height * (9 / 15));
+const constrainedWidth = Math.min(width, maxWidthFromHeight);
 
-if (width <= sizeChessBoard) {
-    sizeChessBoard = width;
+if (constrainedWidth <= sizeChessBoard) {
+    sizeChessBoard = constrainedWidth;
 }
 
 if (useBackgroundImg === true) {
