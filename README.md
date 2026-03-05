@@ -12,3 +12,5 @@ A small chess web project featuring a JavaScript-based frontend and a chess engi
 - Play chess in the browser
 - Rust-based chess engine compiled to WASM
 - Fast move calculation in the browser
+
+https://twolt.de/chess
