@@ -112,6 +112,8 @@ body {
     width: var(--allFields);
     height: var(--allFields);
     position: relative;
+    touch-action: none;
+    -webkit-user-select: none;
 }
 
 .square {
@@ -135,6 +137,9 @@ body {
     will-change: transform;
     shape-rendering: geometricPrecision;
     z-index: 10;
+    touch-action: none;
+    -webkit-user-drag: none;
+    -webkit-user-select: none;
 }
 
 .board.nonInteractive .piece {

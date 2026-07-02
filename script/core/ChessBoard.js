@@ -33,9 +33,11 @@ export default class ChessBoard {
 
         // Drag-State
         this.currentElement  = null;  // aktuell gezogene Figur
+        this.activePointerId = null;  // Pointer, der den aktuellen Drag ausgelöst hat
         this.dragOffsetX     = 0;     // Mausversatz zur Figurenmitte (X)
         this.dragOffsetY     = 0;     // Mausversatz zur Figurenmitte (Y)
         this.highlightFadeMs = 100;
+        this.lastTouchPointerDownAt = 0;
 
         // Konfiguration / Zustände
         this.interactive        = interactive;
@@ -639,7 +641,16 @@ export default class ChessBoard {
     enableDrag() {
         if (!this.interactive) return;
 
-        this.board.addEventListener("mousedown", (event) => {
+        const startDrag = (event) => {
+            if (event.pointerType && event.pointerType !== "mouse") return;
+            if (event.button != null && event.button !== 0) return;
+
+            // iOS/WebKit kann nach Touch-Eingaben kompatible Maus-Events erzeugen.
+            // Die duerfen den Touch-Auswahlzustand nicht ueberschreiben.
+            if (!event.pointerType && Date.now() - this.lastTouchPointerDownAt < 700) {
+                return;
+            }
+
             const piece = event.target.closest(".piece");
             if (!piece) return;
 
@@ -656,6 +667,7 @@ export default class ChessBoard {
             }
 
             this.currentElement = piece;      
+            this.activePointerId = event.pointerId ?? null;
             this.selectedField = null; // Falls eine Feld über touch angemeldet war, lösche es  
 
             // >>> HIER der neue Hook: Figur wird „angehoben“
@@ -690,14 +702,27 @@ export default class ChessBoard {
             piece.style.zIndex = "9999";
             piece.classList.add("drag");
 
-            document.addEventListener("mousemove", this.onMouseMove);
-            document.addEventListener("mouseup", this.onMouseUp);
-        });
+            if (event.pointerType) {
+                document.addEventListener("pointermove", this.onMouseMove);
+                document.addEventListener("pointerup", this.onMouseUp);
+                document.addEventListener("pointercancel", this.onMouseUp);
+            } else {
+                document.addEventListener("mousemove", this.onMouseMove);
+                document.addEventListener("mouseup", this.onMouseUp);
+            }
+        };
+
+        if (window.PointerEvent) {
+            this.board.addEventListener("pointerdown", startDrag);
+        } else {
+            this.board.addEventListener("mousedown", startDrag);
+        }
     }
 
     // Bewegt die aktuell gezogene Figur mit der Maus
     onMouseMove(event) {
         if (!this.currentElement) return;
+        if (this.activePointerId != null && event.pointerId !== this.activePointerId) return;
 
         const piece = this.currentElement;
         const boardRect = this.board.getBoundingClientRect();
@@ -717,9 +742,13 @@ export default class ChessBoard {
     // Wird beim Loslassen der Maus aufgerufen – validiert den Zug oder setzt zurück
     onMouseUp(event) {
         if (!this.currentElement) return;
+        if (this.activePointerId != null && event.pointerId !== this.activePointerId) return;
         event.preventDefault();
 
         // Drag-Events wieder abmelden
+        document.removeEventListener("pointermove", this.onMouseMove);
+        document.removeEventListener("pointerup", this.onMouseUp);
+        document.removeEventListener("pointercancel", this.onMouseUp);
         document.removeEventListener("mousemove", this.onMouseMove);
         document.removeEventListener("mouseup", this.onMouseUp);
 
@@ -777,6 +806,7 @@ export default class ChessBoard {
 
         this.clearHighlights();
         this.currentElement = null;
+        this.activePointerId = null;
         document.body.style.cursor = "default";
     }
 
@@ -901,6 +931,7 @@ export default class ChessBoard {
 
         this.board.addEventListener("pointerdown", (event) => {
             if (event.pointerType !== "touch") return; // nur Touch, Maus bleibt bei Drag
+            this.lastTouchPointerDownAt = Date.now();
             event.preventDefault();
 
             const rect = this.board.getBoundingClientRect();
